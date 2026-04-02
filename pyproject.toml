@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "biases"
+version = "0.1.0"
+description = "Research framework for studying bias and uncertainty in LLM-as-a-Judge evaluations."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "datasets>=2.21,<3.0",
+  "hydra-core>=1.3,<2.0",
+  "omegaconf>=2.3,<3.0",
+  "pydantic>=2.9,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+]
+api = [
+  "httpx>=0.27,<1.0",
+]
+local = [
+  "torch>=2.4,<3.0",
+  "transformers>=4.45,<5.0",
+]
+
+[project.scripts]
+biases = "biases.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/biases"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
