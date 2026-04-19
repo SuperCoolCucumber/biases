@@ -38,7 +38,15 @@ df_final = df_sampled.sample(frac=1, random_state=42).reset_index(drop=True)
 # --------------------------------------------------
 # Keep only relevant columns
 # --------------------------------------------------
-columns_to_keep = ['question_id', 'model_a', 'model_b', 'winner', 'turn']
+columns_to_keep = [
+    'question_id',
+    'model_a',
+    'model_b',
+    'winner',
+    'turn',
+    'conversation_a',
+    'conversation_b'
+]
 df_final = df_final[columns_to_keep]
 
 # --------------------------------------------------
