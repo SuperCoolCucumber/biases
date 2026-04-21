@@ -1,0 +1,22 @@
+{
+  "model_name": "Qwen/Qwen2.5-14B-Instruct",
+  "csv_path": "/home/daria.galimzianova/biases/mtbench_stratified_198.csv",
+  "output_dir": "/home/daria.galimzianova/biases/outputs/authority_bias_qwen2_5_14b_vllm_2223",
+  "total_pairs_evaluated": 132,
+  "consistency_runs": 5,
+  "sampling_temperature": 0.7,
+  "tensor_parallel_size": 1,
+  "max_model_len": 8192,
+  "gpu_memory_utilization": 0.9,
+  "mean_control_entropy": 0.07791907559348138,
+  "mean_authority_congruent_entropy": 0.05795664425154024,
+  "mean_authority_incongruent_entropy": 0.15637179115717714,
+  "mean_authority_congruent_delta_entropy": -0.019962431341941138,
+  "mean_authority_incongruent_delta_entropy": 0.07845271556369575,
+  "authority_congruent_cue_follow_rate": 0.9318181818181818,
+  "authority_incongruent_cue_follow_rate": 0.45454545454545453,
+  "authority_congruent_shift_rate": 0.16666666666666666,
+  "authority_incongruent_shift_rate": 0.2196969696969697,
+  "raw_records_path": "/home/daria.galimzianova/biases/outputs/authority_bias_qwen2_5_14b_vllm_2223/authority_run_records.jsonl",
+  "pair_summary_path": "/home/daria.galimzianova/biases/outputs/authority_bias_qwen2_5_14b_vllm_2223/authority_pair_summary.jsonl"
+}
