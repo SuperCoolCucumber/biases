@@ -1,0 +1,16 @@
+{
+  "model_name": "Qwen/Qwen2.5-14B-Instruct",
+  "csv_path": "/home/daria.galimzianova/biases/mtbench_stratified_198.csv",
+  "output_dir": "/home/daria.galimzianova/biases/outputs/position_bias_qwen2_5_14b_vllm_2017",
+  "total_pairs_loaded": 198,
+  "usable_pairs_for_flip": 197,
+  "flip_count": 23,
+  "flip_rate": 0.116751269035533,
+  "consistency_runs": 5,
+  "sampling_temperature": 0.7,
+  "tensor_parallel_size": 1,
+  "max_model_len": 8192,
+  "gpu_memory_utilization": 0.9,
+  "raw_records_path": "/home/daria.galimzianova/biases/outputs/position_bias_qwen2_5_14b_vllm_2017/position_run_records.jsonl",
+  "pair_summary_path": "/home/daria.galimzianova/biases/outputs/position_bias_qwen2_5_14b_vllm_2017/position_pair_summary.jsonl"
+}
