@@ -18,6 +18,12 @@ venv/
 .coverage
 .coverage.*
 htmlcov/
+.cache/
+
+# Local experiment artifacts
+logs/
+outputs/
+slurm/
 
 # Local environment and editor files
 .env

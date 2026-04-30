@@ -41,6 +41,19 @@ To print a sample serialized record shape:
 uv run biases schema-demo
 ```
 
+To run the position-bias experiment on the local CSV sample with vLLM:
+
+```bash
+uv sync --extra local --extra dev
+python main.py run-position --data-path mtbench_stratified_198.csv
+```
+
+To submit the same experiment to SLURM with the dedicated launcher:
+
+```bash
+sbatch slurm/position_bias_qwen2_5_14b_vllm.slurm
+```
+
 ### 2. Create experiment objects in Python
 
 The main objects are `Candidate`, `JudgeExample`, `BiasCondition`,
