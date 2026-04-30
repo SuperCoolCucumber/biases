@@ -23,12 +23,11 @@ api = [
   "httpx>=0.27,<1.0",
 ]
 local = [
-  "torch>=2.4,<3.0",
-  "transformers>=4.45,<5.0",
+  "vllm>=0.6,<1.0",
 ]
 
 [project.scripts]
-biases = "biases.cli:main"
+biases = "biases.command_line:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/biases"]

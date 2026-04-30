@@ -39,6 +39,7 @@ class Candidate(BaseModel):
     label: VerdictLabel
     response: str
     model_id: str | None = None
+    response_id: str | None = None
 
 
 class JudgeExample(BaseModel):

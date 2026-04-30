@@ -1,4 +1,4 @@
-from biases.cli import main
+from biases.command_line import main
 
 
 if __name__ == "__main__":
