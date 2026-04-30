@@ -45,7 +45,7 @@ To run the position-bias experiment on the local CSV sample with vLLM:
 
 ```bash
 uv sync --extra local --extra dev
-python main.py run-position --data-path mtbench_stratified_198.csv
+python main.py run-position --data-path data/processed/mtbench_stratified_198.csv
 ```
 
 To submit the same experiment to SLURM with the dedicated launcher:

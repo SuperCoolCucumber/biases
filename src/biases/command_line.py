@@ -88,7 +88,7 @@ def build_demo_record() -> RunRecord:
 def _add_common_vllm_args(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--data-path",
-        default="mtbench_stratified_198.csv",
+        default="data/processed/mtbench_stratified_198.csv",
         help="Path to the CSV file containing pairwise MT-Bench examples.",
     )
     subparser.add_argument(
