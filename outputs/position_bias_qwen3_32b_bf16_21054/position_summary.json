@@ -1,0 +1,17 @@
+{
+  "model_name": "Qwen/Qwen3-32B",
+  "csv_path": "/home/daria.galimzianova/biases/data/processed/mtbench_stratified_198.csv",
+  "output_dir": "/home/daria.galimzianova/biases/outputs/position_bias_qwen3_32b_bf16_21054",
+  "total_pairs_loaded": 198,
+  "usable_pairs_for_flip": 195,
+  "flip_count": 32,
+  "flip_rate": 0.1641025641025641,
+  "consistency_runs": 5,
+  "sampling_temperature": 0.7,
+  "tensor_parallel_size": 2,
+  "max_model_len": 8192,
+  "gpu_memory_utilization": 0.9,
+  "dtype": "bfloat16",
+  "raw_records_path": "/home/daria.galimzianova/biases/outputs/position_bias_qwen3_32b_bf16_21054/position_run_records.jsonl",
+  "pair_summary_path": "/home/daria.galimzianova/biases/outputs/position_bias_qwen3_32b_bf16_21054/position_pair_summary.jsonl"
+}
