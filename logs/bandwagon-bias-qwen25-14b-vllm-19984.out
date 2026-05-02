@@ -1,0 +1,53 @@
+INFO 04-30 15:24:27 [utils.py:233] non-default args: {'trust_remote_code': True, 'max_model_len': 8192, 'disable_log_stats': True, 'model': 'Qwen/Qwen2.5-14B-Instruct'}
+INFO 04-30 15:24:29 [model.py:549] Resolved architecture: Qwen2ForCausalLM
+INFO 04-30 15:24:29 [model.py:1678] Using max model len 8192
+INFO 04-30 15:24:29 [scheduler.py:238] Chunked prefill is enabled with max_num_batched_tokens=8192.
+INFO 04-30 15:24:29 [vllm.py:790] Asynchronous scheduling is enabled.
+(EngineCore pid=2699532) INFO 04-30 15:24:33 [core.py:105] Initializing a V1 LLM engine (v0.19.1) with config: model='Qwen/Qwen2.5-14B-Instruct', speculative_config=None, tokenizer='Qwen/Qwen2.5-14B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=True, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False), seed=0, served_model_name=Qwen/Qwen2.5-14B-Instruct, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'splitting_ops': ['vllm::unified_attention', 'vllm::unified_attention_with_output', 'vllm::unified_mla_attention', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::linear_attention', 'vllm::plamo2_mamba_mixer', 'vllm::gdn_attention_core', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::kda_attention', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_images_per_batch': 0, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'size_asserts': False, 'alignment_asserts': False, 'scalar_asserts': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 272, 288, 304, 320, 336, 352, 368, 384, 400, 416, 432, 448, 464, 480, 496, 512], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False}, 'max_cudagraph_capture_size': 512, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': True, 'static_all_moe_layers': []}
+(EngineCore pid=2699532) INFO 04-30 15:24:34 [parallel_state.py:1400] world_size=1 rank=0 local_rank=0 distributed_init_method=tcp://192.168.62.153:52459 backend=nccl
+(EngineCore pid=2699532) INFO 04-30 15:24:34 [parallel_state.py:1716] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore pid=2699532) INFO 04-30 15:24:35 [gpu_model_runner.py:4735] Starting to load model Qwen/Qwen2.5-14B-Instruct...
+(EngineCore pid=2699532) INFO 04-30 15:24:36 [cuda.py:334] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+(EngineCore pid=2699532) INFO 04-30 15:24:36 [flash_attn.py:596] Using FlashAttention version 2
+(EngineCore pid=2699532) INFO 04-30 15:25:16 [default_loader.py:384] Loading weights took 37.83 seconds
+(EngineCore pid=2699532) INFO 04-30 15:25:16 [gpu_model_runner.py:4820] Model loading took 27.57 GiB memory and 40.789690 seconds
+(EngineCore pid=2699532) INFO 04-30 15:25:22 [backends.py:1051] Using cache directory: /home/daria.galimzianova/.cache/vllm/torch_compile_cache/25a94afd17/rank_0_0/backbone for vLLM's torch.compile
+(EngineCore pid=2699532) INFO 04-30 15:25:22 [backends.py:1111] Dynamo bytecode transform time: 5.75 s
+(EngineCore pid=2699532) INFO 04-30 15:25:24 [backends.py:285] Directly load the compiled graph(s) for compile range (1, 8192) from the cache, took 1.736 s
+(EngineCore pid=2699532) INFO 04-30 15:25:24 [decorators.py:305] Directly load AOT compilation from path /home/daria.galimzianova/.cache/vllm/torch_compile_cache/torch_aot_compile/05ed10cc6c1640467451d882338fb8a5332d110873c1c2f44b1af0c711dbc5de/rank_0_0/model
+(EngineCore pid=2699532) INFO 04-30 15:25:24 [monitor.py:48] torch.compile took 7.86 s in total
+(EngineCore pid=2699532) INFO 04-30 15:25:26 [monitor.py:76] Initial profiling/warmup run took 1.84 s
+(EngineCore pid=2699532) INFO 04-30 15:25:36 [kv_cache_utils.py:829] Overriding num_gpu_blocks=0 with num_gpu_blocks_override=512
+(EngineCore pid=2699532) INFO 04-30 15:25:36 [gpu_model_runner.py:5876] Profiling CUDA graph memory: PIECEWISE=51 (largest=512), FULL=35 (largest=256)
+(EngineCore pid=2699532) INFO 04-30 15:25:38 [gpu_model_runner.py:5955] Estimated CUDA graph memory: 0.70 GiB total
+(EngineCore pid=2699532) INFO 04-30 15:25:38 [gpu_worker.py:436] Available KV cache memory: 6.92 GiB
+(EngineCore pid=2699532) INFO 04-30 15:25:38 [gpu_worker.py:470] In v0.19, CUDA graph memory profiling will be enabled by default (VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1), which more accurately accounts for CUDA graph memory during KV cache allocation. To try it now, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1 and increase --gpu-memory-utilization from 0.9000 to 0.9177 to maintain the same effective KV cache size.
+(EngineCore pid=2699532) INFO 04-30 15:25:38 [kv_cache_utils.py:1319] GPU KV cache size: 37,760 tokens
+(EngineCore pid=2699532) INFO 04-30 15:25:38 [kv_cache_utils.py:1324] Maximum concurrency for 8,192 tokens per request: 4.61x
+(EngineCore pid=2699532) INFO 04-30 15:25:44 [gpu_model_runner.py:6046] Graph capturing finished in 6 secs, took 0.75 GiB
+(EngineCore pid=2699532) INFO 04-30 15:25:44 [gpu_worker.py:597] CUDA graph pool memory: 0.75 GiB (actual), 0.7 GiB (estimated), difference: 0.05 GiB (6.8%).
+(EngineCore pid=2699532) INFO 04-30 15:25:44 [core.py:283] init engine (profile, create kv cache, warmup model) took 27.47 seconds
+(EngineCore pid=2699532) INFO 04-30 15:28:17 [core.py:1210] Shutdown initiated (timeout=0)
+(EngineCore pid=2699532) INFO 04-30 15:28:17 [core.py:1233] Shutdown complete
+{
+  "model_name": "Qwen/Qwen2.5-14B-Instruct",
+  "csv_path": "/home/daria.galimzianova/biases/data/processed/mtbench_stratified_198.csv",
+  "output_dir": "/home/daria.galimzianova/biases/outputs/bandwagon_bias_qwen2_5_14b_vllm_19984",
+  "total_pairs_evaluated": 132,
+  "consistency_runs": 5,
+  "sampling_temperature": 0.7,
+  "tensor_parallel_size": 1,
+  "max_model_len": 8192,
+  "gpu_memory_utilization": 0.9,
+  "mean_control_entropy": 0.07873020643081152,
+  "mean_bandwagon_congruent_entropy": 0.043935917239327146,
+  "mean_bandwagon_incongruent_entropy": 0.1043583342475181,
+  "mean_bandwagon_congruent_delta_entropy": -0.034794289191484376,
+  "mean_bandwagon_incongruent_delta_entropy": 0.02562812781670657,
+  "bandwagon_congruent_cue_follow_rate": 0.9318181818181818,
+  "bandwagon_incongruent_cue_follow_rate": 0.4621212121212121,
+  "bandwagon_congruent_shift_rate": 0.15151515151515152,
+  "bandwagon_incongruent_shift_rate": 0.24242424242424243,
+  "raw_records_path": "/home/daria.galimzianova/biases/outputs/bandwagon_bias_qwen2_5_14b_vllm_19984/bandwagon_run_records.jsonl",
+  "pair_summary_path": "/home/daria.galimzianova/biases/outputs/bandwagon_bias_qwen2_5_14b_vllm_19984/bandwagon_pair_summary.jsonl"
+}
