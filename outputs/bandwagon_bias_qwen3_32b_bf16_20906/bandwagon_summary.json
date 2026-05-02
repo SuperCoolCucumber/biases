@@ -1,0 +1,23 @@
+{
+  "model_name": "Qwen/Qwen3-32B",
+  "csv_path": "/home/daria.galimzianova/biases/data/processed/mtbench_stratified_198.csv",
+  "output_dir": "/home/daria.galimzianova/biases/outputs/bandwagon_bias_qwen3_32b_bf16_20906",
+  "total_pairs_evaluated": 132,
+  "consistency_runs": 5,
+  "sampling_temperature": 0.7,
+  "tensor_parallel_size": 2,
+  "max_model_len": 8192,
+  "gpu_memory_utilization": 0.9,
+  "dtype": "bfloat16",
+  "mean_control_entropy": 0.24120488085645034,
+  "mean_bandwagon_congruent_entropy": 0.2452335468577092,
+  "mean_bandwagon_incongruent_entropy": 0.4009876429261402,
+  "mean_bandwagon_congruent_delta_entropy": 0.004028666001258879,
+  "mean_bandwagon_incongruent_delta_entropy": 0.15978276206968986,
+  "bandwagon_congruent_cue_follow_rate": 0.8939393939393939,
+  "bandwagon_incongruent_cue_follow_rate": 0.3939393939393939,
+  "bandwagon_congruent_shift_rate": 0.09090909090909091,
+  "bandwagon_incongruent_shift_rate": 0.19696969696969696,
+  "raw_records_path": "/home/daria.galimzianova/biases/outputs/bandwagon_bias_qwen3_32b_bf16_20906/bandwagon_run_records.jsonl",
+  "pair_summary_path": "/home/daria.galimzianova/biases/outputs/bandwagon_bias_qwen3_32b_bf16_20906/bandwagon_pair_summary.jsonl"
+}
