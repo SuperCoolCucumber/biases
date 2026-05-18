@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Sequence
 
 from biases.authority_bias import run_authority_experiment
+from biases.bandwagon_bias import run_bandwagon_experiment
 from biases.position_bias import (
+    DEFAULT_DATA_PATH,
     DEFAULT_MAX_MODEL_LEN,
     DEFAULT_MODEL_NAME,
     run_position_experiment,
@@ -88,8 +90,13 @@ def build_demo_record() -> RunRecord:
 def _add_common_vllm_args(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument(
         "--data-path",
-        default="data/processed/mtbench_stratified_198.csv",
+        default=str(DEFAULT_DATA_PATH),
         help="Path to the CSV file containing pairwise MT-Bench examples.",
+    )
+    subparser.add_argument(
+        "--dataset-split",
+        default="full",
+        help="Logical dataset split label stored in run metadata.",
     )
     subparser.add_argument(
         "--model-name",
@@ -132,6 +139,16 @@ def _add_common_vllm_args(subparser: argparse.ArgumentParser) -> None:
         default=0.9,
         help="Target GPU memory utilization for vLLM.",
     )
+    subparser.add_argument(
+        "--dtype",
+        default="auto",
+        help="Model dtype passed to vLLM, for example auto, float16, or bfloat16.",
+    )
+    subparser.add_argument(
+        "--skip-verbalized-confidence",
+        action="store_true",
+        help="Skip the separate label-plus-confidence pass.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -167,6 +184,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory where run artifacts will be written.",
     )
     _add_common_vllm_args(authority_parser)
+
+    bandwagon_parser = subparsers.add_parser(
+        "run-bandwagon",
+        help="Run the bandwagon-bias experiment over a CSV dataset.",
+    )
+    bandwagon_parser.add_argument(
+        "--output-dir",
+        default="outputs/bandwagon_bias_qwen2_5_14b_vllm",
+        help="Directory where run artifacts will be written.",
+    )
+    _add_common_vllm_args(bandwagon_parser)
     return parser
 
 
@@ -183,12 +211,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             csv_path=Path(args.data_path),
             output_dir=Path(args.output_dir),
             model_name=args.model_name,
+            dataset_split=args.dataset_split,
             limit=args.limit,
             consistency_runs=args.consistency_runs,
             sampling_temperature=args.sampling_temperature,
             tensor_parallel_size=args.tensor_parallel_size,
             max_model_len=args.max_model_len,
             gpu_memory_utilization=args.gpu_memory_utilization,
+            dtype=args.dtype,
+            include_verbalized_confidence=not args.skip_verbalized_confidence,
         )
         print(json.dumps(summary, indent=2))
         return 0
@@ -198,12 +229,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             csv_path=Path(args.data_path),
             output_dir=Path(args.output_dir),
             model_name=args.model_name,
+            dataset_split=args.dataset_split,
             limit=args.limit,
             consistency_runs=args.consistency_runs,
             sampling_temperature=args.sampling_temperature,
             tensor_parallel_size=args.tensor_parallel_size,
             max_model_len=args.max_model_len,
             gpu_memory_utilization=args.gpu_memory_utilization,
+            dtype=args.dtype,
+            include_verbalized_confidence=not args.skip_verbalized_confidence,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "run-bandwagon":
+        summary = run_bandwagon_experiment(
+            csv_path=Path(args.data_path),
+            output_dir=Path(args.output_dir),
+            model_name=args.model_name,
+            dataset_split=args.dataset_split,
+            limit=args.limit,
+            consistency_runs=args.consistency_runs,
+            sampling_temperature=args.sampling_temperature,
+            tensor_parallel_size=args.tensor_parallel_size,
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            dtype=args.dtype,
+            include_verbalized_confidence=not args.skip_verbalized_confidence,
         )
         print(json.dumps(summary, indent=2))
         return 0

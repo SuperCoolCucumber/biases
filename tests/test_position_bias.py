@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from biases.position_bias import load_position_pairs
+from biases.position_bias import QwenJudge, load_position_pairs
 from biases.position_prompts import build_position_prompt_package
 from biases.schemas import OutputMode, VerdictLabel
 
@@ -54,3 +54,56 @@ def test_position_prompt_package_contains_both_answers(tmp_path: Path) -> None:
     assert list(prompt.allowed_labels) == [VerdictLabel.A, VerdictLabel.B, VerdictLabel.TIE] or list(
         prompt.allowed_labels
     ) == ["A", "B", "tie"]
+
+
+def test_qwen3_prompt_prefills_empty_thinking_block() -> None:
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.model_name = "Qwen/Qwen3-32B"
+
+    prompt = "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nu<|im_end|>\n<|im_start|>assistant\n"
+
+    prepared = judge._prepare_prompt(prompt)
+
+    assert prepared.endswith("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+
+
+def test_non_qwen3_prompt_is_unchanged() -> None:
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.model_name = "Qwen/Qwen2.5-14B-Instruct"
+    prompt = "<|im_start|>assistant\n"
+
+    assert judge._prepare_prompt(prompt) == prompt
+
+
+class _Logprob:
+    def __init__(self, decoded_token: str, logprob: float) -> None:
+        self.decoded_token = decoded_token
+        self.logprob = logprob
+
+
+def test_label_probs_are_aggregated_from_decision_token_ids() -> None:
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.decision_token_id_to_label = {
+        10: "A",
+        11: "A",
+        20: "B",
+        30: "tie",
+    }
+
+    probs = judge._extract_label_probs(
+        {
+            10: _Logprob("A", -0.2),
+            11: _Logprob(" A", -1.2),
+            20: _Logprob("B", -2.0),
+            30: _Logprob("T", -3.0),
+        }
+    )
+
+    assert set(probs) == {"A", "B", "tie"}
+    assert probs["A"] > probs["B"] > probs["tie"]
+    assert abs(sum(probs.values()) - 1.0) < 1e-9
+
+
+def test_parse_confidence_accepts_expected_two_line_format() -> None:
+    assert QwenJudge._parse_confidence("A\nConfidence: 87") == 87.0
+    assert QwenJudge._parse_confidence("B\nconfidence = 100") == 100.0

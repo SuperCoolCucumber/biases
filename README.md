@@ -54,6 +54,43 @@ To submit the same experiment to SLURM with the dedicated launcher:
 sbatch slurm/position_bias_qwen2_5_14b_vllm.slurm
 ```
 
+### Full MT-Bench Qwen3 runs
+
+Prepare the full MT-Bench human-judgment CSV and deterministic routing splits:
+
+```bash
+python scripts/prepare_mtbench_full_splits.py
+```
+
+This writes:
+
+- `data/processed/mtbench_full.csv`
+- `data/processed/mtbench_full_calibration.csv`
+- `data/processed/mtbench_full_test.csv`
+
+The full CSV contains a `routing_split` column. The experiment runners preserve
+that value in raw records, pair summaries, and flat uncertainty-score files, so
+calibration/test routing analysis can be done after one full run.
+
+Submit the Qwen3 non-thinking full-dataset experiments:
+
+```bash
+sbatch slurm/position_bias_qwen3_14b_bf16_full.slurm
+sbatch slurm/authority_bias_qwen3_14b_bf16_full.slurm
+sbatch slurm/bandwagon_bias_qwen3_14b_bf16_full.slurm
+
+sbatch slurm/position_bias_qwen3_32b_bf16_full.slurm
+sbatch slurm/authority_bias_qwen3_32b_bf16_full.slurm
+sbatch slurm/bandwagon_bias_qwen3_32b_bf16_full.slurm
+```
+
+For Qwen3, the runner prefills an empty thinking block before generation so the
+first generated token is the verdict label in non-thinking mode. The logit
+uncertainty pass constrains that first token to tokenizer IDs for `A`, `B`, and
+`T`, then saves the resulting label probabilities, entropy, MSP, margin,
+verbalized confidence, and consistency entropy to
+`*_uncertainty_scores.jsonl`.
+
 ### 2. Create experiment objects in Python
 
 The main objects are `Candidate`, `JudgeExample`, `BiasCondition`,

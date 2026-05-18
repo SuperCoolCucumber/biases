@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import pandas as pd
+from datasets import load_dataset
+
+
+DEFAULT_DATASET_NAME = "lmsys/mt_bench_human_judgments"
+DEFAULT_SPLIT = "human"
+DEFAULT_SEED = 42
+DEFAULT_CALIBRATION_FRACTION = 0.5
+DEFAULT_FULL_OUTPUT_PATH = Path("data/processed/mtbench_full.csv")
+DEFAULT_CALIBRATION_OUTPUT_PATH = Path("data/processed/mtbench_full_calibration.csv")
+DEFAULT_TEST_OUTPUT_PATH = Path("data/processed/mtbench_full_test.csv")
+
+OUTPUT_COLUMNS = [
+    "question_id",
+    "model_a",
+    "model_b",
+    "winner",
+    "turn",
+    "conversation_a",
+    "conversation_b",
+    "routing_split",
+]
+
+
+def _assign_split(
+    df: pd.DataFrame,
+    *,
+    calibration_fraction: float,
+    seed: int,
+) -> pd.DataFrame:
+    if not 0 < calibration_fraction < 1:
+        raise ValueError("calibration_fraction must be between 0 and 1")
+
+    pieces: list[pd.DataFrame] = []
+    for _, group in df.groupby("winner", dropna=False, group_keys=False):
+        shuffled = group.sample(frac=1, random_state=seed).copy()
+        calibration_size = round(len(shuffled) * calibration_fraction)
+        calibration_size = min(max(calibration_size, 1), len(shuffled) - 1) if len(shuffled) > 1 else len(shuffled)
+        shuffled["routing_split"] = "test"
+        shuffled.iloc[:calibration_size, shuffled.columns.get_loc("routing_split")] = "calibration"
+        pieces.append(shuffled)
+
+    return (
+        pd.concat(pieces, ignore_index=True)
+        .sample(frac=1, random_state=seed)
+        .reset_index(drop=True)
+    )
+
+
+def build_full_dataset_with_splits(
+    *,
+    dataset_name: str,
+    split: str,
+    calibration_fraction: float,
+    seed: int,
+) -> pd.DataFrame:
+    dataset = load_dataset(dataset_name)
+    df = pd.DataFrame(dataset[split])
+    missing = [column for column in OUTPUT_COLUMNS if column != "routing_split" and column not in df.columns]
+    if missing:
+        raise ValueError(f"Dataset is missing expected columns: {missing}")
+    return _assign_split(df, calibration_fraction=calibration_fraction, seed=seed)[OUTPUT_COLUMNS]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Create full MT-Bench human-judgment CSVs with calibration/test routing splits."
+        ),
+    )
+    parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
+    parser.add_argument("--split", default=DEFAULT_SPLIT)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument(
+        "--calibration-fraction",
+        type=float,
+        default=DEFAULT_CALIBRATION_FRACTION,
+    )
+    parser.add_argument("--full-output-path", type=Path, default=DEFAULT_FULL_OUTPUT_PATH)
+    parser.add_argument(
+        "--calibration-output-path",
+        type=Path,
+        default=DEFAULT_CALIBRATION_OUTPUT_PATH,
+    )
+    parser.add_argument("--test-output-path", type=Path, default=DEFAULT_TEST_OUTPUT_PATH)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    df = build_full_dataset_with_splits(
+        dataset_name=args.dataset_name,
+        split=args.split,
+        calibration_fraction=args.calibration_fraction,
+        seed=args.seed,
+    )
+
+    calibration = df[df["routing_split"] == "calibration"].copy()
+    test = df[df["routing_split"] == "test"].copy()
+
+    for path, frame in (
+        (args.full_output_path, df),
+        (args.calibration_output_path, calibration),
+        (args.test_output_path, test),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(path, index=False)
+        print(f"Saved: {path}")
+        print(f"Rows: {len(frame)}")
+        print("Winner distribution:")
+        print(frame["winner"].value_counts(dropna=False))
+        print("Routing split distribution:")
+        print(frame["routing_split"].value_counts(dropna=False))
+        print()
+
+
+if __name__ == "__main__":
+    main()

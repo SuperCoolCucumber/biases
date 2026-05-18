@@ -151,6 +151,7 @@ class ConsistencyMetrics(BaseModel):
     vote_entropy: float
     unique_verdict_count: int
     flip_rate: float
+    verdict_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class UncertaintyBundle(BaseModel):

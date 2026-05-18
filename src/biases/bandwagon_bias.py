@@ -5,7 +5,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from biases.authority_prompts import build_authority_cue, build_authority_prompt_package
+from biases.bandwagon_prompts import build_bandwagon_cue, build_bandwagon_prompt_package
 from biases.position_bias import (
     DEFAULT_MAX_MODEL_LEN,
     DEFAULT_MODEL_NAME,
@@ -41,7 +41,7 @@ def _mean_or_none(values: list[float | None]) -> float | None:
     return mean(valid) if valid else None
 
 
-def run_authority_experiment(
+def run_bandwagon_experiment(
     *,
     csv_path: Path,
     output_dir: Path,
@@ -74,7 +74,7 @@ def run_authority_experiment(
         dataset_split=dataset_split,
         model_name=model_name,
         backend_name="vllm",
-        bias_name=BiasType.AUTHORITY.value,
+        bias_name=BiasType.BANDWAGON.value,
         output_mode=OutputMode.CHOICE_ONLY,
         uncertainty_methods=UNCERTAINTY_METHODS
         if include_verbalized_confidence
@@ -100,7 +100,7 @@ def run_authority_experiment(
             {
                 "name": "control",
                 "condition": BiasCondition(
-                    bias_type=BiasType.AUTHORITY,
+                    bias_type=BiasType.BANDWAGON,
                     variant_id="control",
                     cue_congruency=CueCongruency.CONTROL,
                     metadata={"pair_id": pair.pair_id},
@@ -109,42 +109,42 @@ def run_authority_experiment(
                 "cue_target": None,
             },
             {
-                "name": "authority_congruent",
+                "name": "bandwagon_congruent",
                 "condition": BiasCondition(
-                    bias_type=BiasType.AUTHORITY,
-                    variant_id="authority_congruent",
+                    bias_type=BiasType.BANDWAGON,
+                    variant_id="bandwagon_congruent",
                     cue_target=congruent_target,
                     cue_congruency=CueCongruency.CONGRUENT,
-                    cue_text=build_authority_cue(congruent_target),
+                    cue_text=build_bandwagon_cue(congruent_target),
                     metadata={"pair_id": pair.pair_id},
                 ),
-                "cue_text": build_authority_cue(congruent_target),
+                "cue_text": build_bandwagon_cue(congruent_target),
                 "cue_target": congruent_target,
             },
             {
-                "name": "authority_incongruent",
+                "name": "bandwagon_incongruent",
                 "condition": BiasCondition(
-                    bias_type=BiasType.AUTHORITY,
-                    variant_id="authority_incongruent",
+                    bias_type=BiasType.BANDWAGON,
+                    variant_id="bandwagon_incongruent",
                     cue_target=incongruent_target,
                     cue_congruency=CueCongruency.INCONGRUENT,
-                    cue_text=build_authority_cue(incongruent_target),
+                    cue_text=build_bandwagon_cue(incongruent_target),
                     metadata={"pair_id": pair.pair_id},
                 ),
-                "cue_text": build_authority_cue(incongruent_target),
+                "cue_text": build_bandwagon_cue(incongruent_target),
                 "cue_target": incongruent_target,
             },
         ]
 
         condition_records: dict[str, RunRecord] = {}
         for condition_spec in conditions:
-            prompt = build_authority_prompt_package(
+            prompt = build_bandwagon_prompt_package(
                 example=example,
                 cue_text=condition_spec["cue_text"],
                 output_mode=OutputMode.CHOICE_ONLY,
             )
             confidence_prompt = (
-                build_authority_prompt_package(
+                build_bandwagon_prompt_package(
                     example=example,
                     cue_text=condition_spec["cue_text"],
                     output_mode=OutputMode.CHOICE_WITH_CONFIDENCE,
@@ -169,8 +169,8 @@ def run_authority_experiment(
             uncertainty_rows.append(_record_to_uncertainty_row(record))
 
         control = condition_records["control"]
-        congruent = condition_records["authority_congruent"]
-        incongruent = condition_records["authority_incongruent"]
+        congruent = condition_records["bandwagon_congruent"]
+        incongruent = condition_records["bandwagon_incongruent"]
 
         control_entropy = control.uncertainty.logit.entropy
         congruent_entropy = congruent.uncertainty.logit.entropy
@@ -182,15 +182,15 @@ def run_authority_experiment(
                 "routing_split": example.metadata.get("routing_split"),
                 "human_winner": human_winner,
                 "control_verdict": control.verdict,
-                "authority_congruent_verdict": congruent.verdict,
-                "authority_incongruent_verdict": incongruent.verdict,
+                "bandwagon_congruent_verdict": congruent.verdict,
+                "bandwagon_incongruent_verdict": incongruent.verdict,
                 "control_entropy": control_entropy,
-                "authority_congruent_entropy": congruent_entropy,
-                "authority_incongruent_entropy": incongruent_entropy,
-                "authority_congruent_delta_entropy": (
+                "bandwagon_congruent_entropy": congruent_entropy,
+                "bandwagon_incongruent_entropy": incongruent_entropy,
+                "bandwagon_congruent_delta_entropy": (
                     None if control_entropy is None or congruent_entropy is None else congruent_entropy - control_entropy
                 ),
-                "authority_incongruent_delta_entropy": (
+                "bandwagon_incongruent_delta_entropy": (
                     None
                     if control_entropy is None or incongruent_entropy is None
                     else incongruent_entropy - control_entropy
@@ -207,50 +207,50 @@ def run_authority_experiment(
                 ),
                 "control_verbalized_confidence": control.uncertainty.verbalized.confidence,
                 "control_verbalized_uncertainty": control.uncertainty.verbalized.uncertainty,
-                "authority_congruent_agreement_rate": (
+                "bandwagon_congruent_agreement_rate": (
                     congruent.uncertainty.consistency.agreement_rate
                     if congruent.uncertainty.consistency
                     else None
                 ),
-                "authority_congruent_consistency_entropy": (
+                "bandwagon_congruent_consistency_entropy": (
                     congruent.uncertainty.consistency.vote_entropy
                     if congruent.uncertainty.consistency
                     else None
                 ),
-                "authority_congruent_verbalized_confidence": (
+                "bandwagon_congruent_verbalized_confidence": (
                     congruent.uncertainty.verbalized.confidence
                 ),
-                "authority_congruent_verbalized_uncertainty": (
+                "bandwagon_congruent_verbalized_uncertainty": (
                     congruent.uncertainty.verbalized.uncertainty
                 ),
-                "authority_incongruent_agreement_rate": (
+                "bandwagon_incongruent_agreement_rate": (
                     incongruent.uncertainty.consistency.agreement_rate
                     if incongruent.uncertainty.consistency
                     else None
                 ),
-                "authority_incongruent_consistency_entropy": (
+                "bandwagon_incongruent_consistency_entropy": (
                     incongruent.uncertainty.consistency.vote_entropy
                     if incongruent.uncertainty.consistency
                     else None
                 ),
-                "authority_incongruent_verbalized_confidence": (
+                "bandwagon_incongruent_verbalized_confidence": (
                     incongruent.uncertainty.verbalized.confidence
                 ),
-                "authority_incongruent_verbalized_uncertainty": (
+                "bandwagon_incongruent_verbalized_uncertainty": (
                     incongruent.uncertainty.verbalized.uncertainty
                 ),
-                "authority_congruent_cue_target": congruent_target,
-                "authority_incongruent_cue_target": incongruent_target,
-                "authority_congruent_cue_follow": congruent.verdict == congruent_target,
-                "authority_incongruent_cue_follow": incongruent.verdict == incongruent_target,
-                "authority_congruent_shift_from_control": congruent.verdict != control.verdict,
-                "authority_incongruent_shift_from_control": incongruent.verdict != control.verdict,
+                "bandwagon_congruent_cue_target": congruent_target,
+                "bandwagon_incongruent_cue_target": incongruent_target,
+                "bandwagon_congruent_cue_follow": congruent.verdict == congruent_target,
+                "bandwagon_incongruent_cue_follow": incongruent.verdict == incongruent_target,
+                "bandwagon_congruent_shift_from_control": congruent.verdict != control.verdict,
+                "bandwagon_incongruent_shift_from_control": incongruent.verdict != control.verdict,
             }
         )
 
-    raw_path = output_dir / "authority_run_records.jsonl"
-    pair_path = output_dir / "authority_pair_summary.jsonl"
-    uncertainty_path = output_dir / "authority_uncertainty_scores.jsonl"
+    raw_path = output_dir / "bandwagon_run_records.jsonl"
+    pair_path = output_dir / "bandwagon_pair_summary.jsonl"
+    uncertainty_path = output_dir / "bandwagon_uncertainty_scores.jsonl"
     write_jsonl(raw_path, raw_rows)
     write_jsonl(pair_path, pair_summaries)
     write_jsonl(uncertainty_path, uncertainty_rows)
@@ -269,35 +269,37 @@ def run_authority_experiment(
         "gpu_memory_utilization": gpu_memory_utilization,
         "dtype": dtype,
         "mean_control_entropy": _mean_or_none([row["control_entropy"] for row in pair_summaries]),
-        "mean_authority_congruent_entropy": _mean_or_none(
-            [row["authority_congruent_entropy"] for row in pair_summaries]
+        "mean_bandwagon_congruent_entropy": _mean_or_none(
+            [row["bandwagon_congruent_entropy"] for row in pair_summaries]
         ),
-        "mean_authority_incongruent_entropy": _mean_or_none(
-            [row["authority_incongruent_entropy"] for row in pair_summaries]
+        "mean_bandwagon_incongruent_entropy": _mean_or_none(
+            [row["bandwagon_incongruent_entropy"] for row in pair_summaries]
         ),
-        "mean_authority_congruent_delta_entropy": _mean_or_none(
-            [row["authority_congruent_delta_entropy"] for row in pair_summaries]
+        "mean_bandwagon_congruent_delta_entropy": _mean_or_none(
+            [row["bandwagon_congruent_delta_entropy"] for row in pair_summaries]
         ),
-        "mean_authority_incongruent_delta_entropy": _mean_or_none(
-            [row["authority_incongruent_delta_entropy"] for row in pair_summaries]
+        "mean_bandwagon_incongruent_delta_entropy": _mean_or_none(
+            [row["bandwagon_incongruent_delta_entropy"] for row in pair_summaries]
         ),
-        "authority_congruent_cue_follow_rate": (
-            sum(1 for row in pair_summaries if row["authority_congruent_cue_follow"]) / len(pair_summaries)
+        "bandwagon_congruent_cue_follow_rate": (
+            sum(1 for row in pair_summaries if row["bandwagon_congruent_cue_follow"]) / len(pair_summaries)
             if pair_summaries
             else None
         ),
-        "authority_incongruent_cue_follow_rate": (
-            sum(1 for row in pair_summaries if row["authority_incongruent_cue_follow"]) / len(pair_summaries)
+        "bandwagon_incongruent_cue_follow_rate": (
+            sum(1 for row in pair_summaries if row["bandwagon_incongruent_cue_follow"]) / len(pair_summaries)
             if pair_summaries
             else None
         ),
-        "authority_congruent_shift_rate": (
-            sum(1 for row in pair_summaries if row["authority_congruent_shift_from_control"]) / len(pair_summaries)
+        "bandwagon_congruent_shift_rate": (
+            sum(1 for row in pair_summaries if row["bandwagon_congruent_shift_from_control"])
+            / len(pair_summaries)
             if pair_summaries
             else None
         ),
-        "authority_incongruent_shift_rate": (
-            sum(1 for row in pair_summaries if row["authority_incongruent_shift_from_control"]) / len(pair_summaries)
+        "bandwagon_incongruent_shift_rate": (
+            sum(1 for row in pair_summaries if row["bandwagon_incongruent_shift_from_control"])
+            / len(pair_summaries)
             if pair_summaries
             else None
         ),
@@ -306,7 +308,7 @@ def run_authority_experiment(
         "uncertainty_scores_path": str(uncertainty_path),
     }
 
-    summary_path = output_dir / "authority_summary.json"
+    summary_path = output_dir / "bandwagon_summary.json"
     ensure_parent(summary_path)
     with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, ensure_ascii=True)
