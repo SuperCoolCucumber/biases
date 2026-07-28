@@ -3,12 +3,14 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from biases.paths import configure_artifact_environment, data_path
 from biases.position_prompts import build_position_prompt_package
 from biases.schemas import (
     BiasCondition,
@@ -27,6 +29,8 @@ from biases.schemas import (
 )
 from biases.utils import ensure_parent, stable_hash, write_jsonl
 
+configure_artifact_environment()
+
 try:
     from vllm import LLM, SamplingParams
 except ImportError:  # pragma: no cover
@@ -35,7 +39,7 @@ except ImportError:  # pragma: no cover
 
 
 DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-14B-Instruct"
-DEFAULT_DATA_PATH = Path("data/processed/mtbench_full.csv")
+DEFAULT_DATA_PATH = data_path("processed", "mtbench_full.csv")
 DEFAULT_MAX_MODEL_LEN = 8192
 UNCERTAINTY_METHODS = [
     "logit",
@@ -443,6 +447,10 @@ class QwenJudge:
             )
 
         self.model_name = model_name
+        disable_custom_all_reduce = os.environ.get("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "").lower()
+        disable_custom_all_reduce = disable_custom_all_reduce in {"1", "true", "yes", "on"}
+        enforce_eager = os.environ.get("BIASES_VLLM_ENFORCE_EAGER", "").lower()
+        enforce_eager = enforce_eager in {"1", "true", "yes", "on"}
         self.model = LLM(
             model=model_name,
             tensor_parallel_size=tensor_parallel_size,
@@ -450,6 +458,8 @@ class QwenJudge:
             trust_remote_code=True,
             gpu_memory_utilization=gpu_memory_utilization,
             dtype=dtype,
+            disable_custom_all_reduce=disable_custom_all_reduce,
+            enforce_eager=enforce_eager,
         )
         self.tokenizer = self._get_tokenizer()
         (
@@ -916,6 +926,7 @@ def run_position_experiment(
         pair_summaries.append(
             {
                 "pair_id": pair.pair_id,
+                "source_row_index": pair.original.metadata.get("source_row_index"),
                 "routing_split": pair.original.metadata.get("routing_split"),
                 "human_winner": _label_to_str(pair.original.human_winner),
                 "original_verdict": pair_records["original"].verdict,

@@ -12,7 +12,6 @@ class BiasType(str, Enum):
     POSITION = "position"
     AUTHORITY = "authority"
     BANDWAGON = "bandwagon"
-    DECOY = "decoy"
     CONTROL = "control"
 
 
@@ -68,7 +67,6 @@ class BiasCondition(BaseModel):
     cue_target: VerdictLabel | None = None
     cue_congruency: CueCongruency = CueCongruency.NONE
     cue_text: str | None = None
-    decoy_anchor: VerdictLabel | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

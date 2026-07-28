@@ -21,9 +21,28 @@ htmlcov/
 .cache/
 
 # Local experiment artifacts
+data/
+data
+artifacts/
 logs/
 outputs/
-slurm/
+outputs
+checkpoints/
+models/
+wandb/
+mlruns/
+
+# Local Slurm launchers rendered for a specific scheduler.
+slurm/*.slurm
+slurm/submit_*.sh
+slurm/generated/
+slurm/local/
+!slurm/README.md
+!slurm/templates/
+!slurm/templates/**
+
+# One-off cluster helper scripts from local runs.
+scripts/submit_remaining_*_jobs.sh
 
 # Local environment and editor files
 .env

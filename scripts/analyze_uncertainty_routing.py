@@ -9,9 +9,16 @@ from typing import Any
 
 import pandas as pd
 
+from biases.paths import output_path
+from biases.stats import bootstrap_bca_ci, wilson_ci
+
 
 MAX_LABEL_ENTROPY = math.log2(3)
-DEFAULT_ROUTING_FRACTIONS = (0.1, 0.25, 0.5)
+DEFAULT_ROUTING_FRACTIONS = (0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50)
+DEFAULT_ESCALATION_PAIRS = (
+    ("Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-27B"),
+    ("Qwen/Qwen3.5-9B", "Qwen/Qwen3.5-27B"),
+)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -65,6 +72,19 @@ def _roc_auc(scores: pd.Series, events: pd.Series) -> float | None:
     return float(auc)
 
 
+def _accuracy_ci(correct: pd.Series) -> dict[str, Any]:
+    values = [bool(value) for value in correct.dropna().tolist()]
+    if not values:
+        return {"accuracy": None, "accuracy_ci_low": None, "accuracy_ci_high": None}
+    successes = sum(values)
+    interval = wilson_ci(successes, len(values))
+    return {
+        "accuracy": interval.estimate,
+        "accuracy_ci_low": interval.low,
+        "accuracy_ci_high": interval.high,
+    }
+
+
 def _threshold_for_top_fraction(scores: pd.Series, top_fraction: float) -> float | None:
     valid = scores.dropna()
     if valid.empty:
@@ -80,6 +100,24 @@ def _routing_metrics(
     event_column: str,
     top_fraction: float,
 ) -> dict[str, Any]:
+    if score_column not in train or score_column not in test:
+        return {
+            "score": score_column,
+            "target_top_fraction": top_fraction,
+            "threshold": None,
+            "test_n": 0,
+            "test_events": None,
+            "test_routed": 0,
+            "test_routed_fraction": 0.0,
+            "test_routed_events": 0,
+            "test_event_recall": None,
+            "test_event_recall_ci_low": None,
+            "test_event_recall_ci_high": None,
+            "test_precision": None,
+            "test_precision_ci_low": None,
+            "test_precision_ci_high": None,
+            "test_auc": None,
+        }
     threshold = _threshold_for_top_fraction(train[score_column], top_fraction)
     if threshold is None:
         return {
@@ -110,19 +148,34 @@ def _routing_metrics(
         "test_routed_fraction": total_routed / len(valid_test) if len(valid_test) else None,
         "test_routed_events": routed_events,
         "test_event_recall": routed_events / total_events if total_events else None,
+        "test_event_recall_ci_low": wilson_ci(routed_events, total_events).low if total_events else None,
+        "test_event_recall_ci_high": wilson_ci(routed_events, total_events).high if total_events else None,
         "test_precision": routed_events / total_routed if total_routed else None,
+        "test_precision_ci_low": wilson_ci(routed_events, total_routed).low if total_routed else None,
+        "test_precision_ci_high": wilson_ci(routed_events, total_routed).high if total_routed else None,
         "test_auc": _roc_auc(valid_test[score_column], events),
     }
 
 
 def _add_combined_scores(df: pd.DataFrame, prefix: str) -> None:
-    entropy = pd.to_numeric(df[f"{prefix}_entropy"], errors="coerce") / MAX_LABEL_ENTROPY
-    verbalized = pd.to_numeric(df[f"{prefix}_verbalized_uncertainty"], errors="coerce")
-    consistency = pd.to_numeric(df.get(f"{prefix}_consistency_entropy"), errors="coerce") / MAX_LABEL_ENTROPY
+    entropy = _numeric_column(df, f"{prefix}_entropy") / MAX_LABEL_ENTROPY
+    consistency = _numeric_column(df, f"{prefix}_consistency_entropy") / MAX_LABEL_ENTROPY
+    msp = _numeric_column(df, f"{prefix}_msp")
+    margin = _numeric_column(df, f"{prefix}_margin")
     df[f"{prefix}_normalized_entropy"] = entropy
-    df[f"{prefix}_mean_entropy_verbalized"] = pd.concat([entropy, verbalized], axis=1).mean(axis=1)
-    df[f"{prefix}_max_entropy_verbalized"] = pd.concat([entropy, verbalized], axis=1).max(axis=1)
-    df[f"{prefix}_mean_all_uncertainty"] = pd.concat([entropy, verbalized, consistency], axis=1).mean(axis=1)
+    df[f"{prefix}_msp_uncertainty"] = 1.0 - msp
+    df[f"{prefix}_margin_uncertainty"] = 1.0 - margin
+    df[f"{prefix}_normalized_consistency_entropy"] = consistency
+    df[f"{prefix}_mean_output_uncertainty"] = pd.concat(
+        [entropy, 1.0 - msp, 1.0 - margin, consistency],
+        axis=1,
+    ).mean(axis=1)
+
+
+def _numeric_column(df: pd.DataFrame, column: str) -> pd.Series:
+    if column not in df:
+        return pd.Series([math.nan] * len(df), index=df.index, dtype="float64")
+    return pd.to_numeric(df[column], errors="coerce")
 
 
 def _latest_full_pair_summaries(outputs_dir: Path) -> list[Path]:
@@ -176,10 +229,10 @@ def analyze_pair_routing(
                     "original",
                     [
                         "original_entropy",
-                        "original_verbalized_uncertainty",
-                        "original_mean_entropy_verbalized",
-                        "original_max_entropy_verbalized",
-                        "original_mean_all_uncertainty",
+                        "original_msp_uncertainty",
+                        "original_margin_uncertainty",
+                        "original_normalized_consistency_entropy",
+                        "original_mean_output_uncertainty",
                     ],
                 )
             )
@@ -196,10 +249,10 @@ def analyze_pair_routing(
                         "control",
                         [
                             "control_entropy",
-                            "control_verbalized_uncertainty",
-                            "control_mean_entropy_verbalized",
-                            "control_max_entropy_verbalized",
-                            "control_mean_all_uncertainty",
+                            "control_msp_uncertainty",
+                            "control_margin_uncertainty",
+                            "control_normalized_consistency_entropy",
+                            "control_mean_output_uncertainty",
                         ],
                     ),
                     (
@@ -208,10 +261,10 @@ def analyze_pair_routing(
                         f"{bias}_incongruent",
                         [
                             f"{bias}_incongruent_entropy",
-                            f"{bias}_incongruent_verbalized_uncertainty",
-                            f"{bias}_incongruent_mean_entropy_verbalized",
-                            f"{bias}_incongruent_max_entropy_verbalized",
-                            f"{bias}_incongruent_mean_all_uncertainty",
+                            f"{bias}_incongruent_msp_uncertainty",
+                            f"{bias}_incongruent_margin_uncertainty",
+                            f"{bias}_incongruent_normalized_consistency_entropy",
+                            f"{bias}_incongruent_mean_output_uncertainty",
                         ],
                     ),
                 ]
@@ -247,6 +300,159 @@ def analyze_pair_routing(
     return rows
 
 
+def _is_correct(verdict: Any, human_winner: Any) -> bool:
+    return str(verdict) == str(human_winner)
+
+
+def _position_frames_by_model(pair_paths: list[Path]) -> dict[str, pd.DataFrame]:
+    frames: dict[str, pd.DataFrame] = {}
+    for pair_path in pair_paths:
+        metadata = _run_metadata(pair_path)
+        bias = metadata.get("bias_name") or pair_path.name.split("_pair_summary.jsonl")[0]
+        if bias != "position":
+            continue
+        df = pd.DataFrame(_read_jsonl(pair_path))
+        if df.empty:
+            continue
+        model_name = str(metadata.get("model_name"))
+        df = df.copy()
+        df["model_name"] = model_name
+        df["join_id"] = range(len(df))
+        frames[model_name] = df
+    return frames
+
+
+def _trapezoid_auc(x_values: list[float], y_values: list[float]) -> float | None:
+    if len(x_values) < 2:
+        return None
+    pairs = sorted(zip(x_values, y_values, strict=True))
+    total = 0.0
+    for (x0, y0), (x1, y1) in zip(pairs, pairs[1:], strict=False):
+        total += (x1 - x0) * (y0 + y1) / 2.0
+    return total / (pairs[-1][0] - pairs[0][0]) if pairs[-1][0] != pairs[0][0] else None
+
+
+def analyze_escalation_routing(
+    *,
+    pair_paths: list[Path],
+    routing_fractions: tuple[float, ...],
+    model_pairs: tuple[tuple[str, str], ...] = DEFAULT_ESCALATION_PAIRS,
+) -> list[dict[str, Any]]:
+    frames = _position_frames_by_model(pair_paths)
+    rows: list[dict[str, Any]] = []
+
+    for weak_model, strong_model in model_pairs:
+        weak = frames.get(weak_model)
+        strong = frames.get(strong_model)
+        if weak is None or strong is None:
+            continue
+
+        merged = weak.merge(
+            strong[
+                [
+                    "join_id",
+                    "pair_id",
+                    "original_verdict",
+                    "human_winner",
+                    "routing_split",
+                ]
+            ].rename(
+                columns={
+                    "original_verdict": "strong_verdict",
+                    "human_winner": "strong_human_winner",
+                    "routing_split": "strong_routing_split",
+                }
+            ),
+            on="join_id",
+            how="inner",
+        )
+        merged = merged.rename(columns={"original_verdict": "weak_verdict"})
+        merged = merged[merged["human_winner"].eq(merged["strong_human_winner"])].copy()
+        merged = merged[merged["routing_split"].eq(merged["strong_routing_split"])].copy()
+        if merged.empty:
+            continue
+
+        merged["weak_correct"] = [
+            _is_correct(verdict, human)
+            for verdict, human in zip(merged["weak_verdict"], merged["human_winner"], strict=True)
+        ]
+        merged["strong_correct"] = [
+            _is_correct(verdict, human)
+            for verdict, human in zip(merged["strong_verdict"], merged["human_winner"], strict=True)
+        ]
+        merged["weak_entropy"] = pd.to_numeric(merged["original_entropy"], errors="coerce")
+
+        calibration = merged[merged["routing_split"].eq("calibration")].dropna(subset=["weak_entropy"])
+        test = merged[merged["routing_split"].eq("test")].dropna(subset=["weak_entropy"]).copy()
+        if calibration.empty or test.empty:
+            continue
+
+        all_weak = _accuracy_ci(test["weak_correct"])
+        all_strong = _accuracy_ci(test["strong_correct"])
+        budget_accuracies: list[float] = []
+        budget_values: list[float] = []
+
+        for fraction in routing_fractions:
+            threshold = _threshold_for_top_fraction(calibration["weak_entropy"], fraction)
+            if threshold is None:
+                continue
+            routed = test["weak_entropy"] >= threshold
+            routed_correct = test["strong_correct"].where(routed, test["weak_correct"])
+            routed_values = [bool(value) for value in routed_correct.tolist()]
+            routed_ci = wilson_ci(sum(routed_values), len(routed_values))
+
+            random_expected = (
+                (1.0 - fraction) * float(test["weak_correct"].mean())
+                + fraction * float(test["strong_correct"].mean())
+            )
+            budget_n = int(round(fraction * len(test)))
+            beneficial = int((~test["weak_correct"] & test["strong_correct"]).sum())
+            oracle_correct = int(test["weak_correct"].sum()) + min(budget_n, beneficial)
+            oracle_accuracy = oracle_correct / len(test)
+            boot = bootstrap_bca_ci(
+                [1.0 if value else 0.0 for value in routed_values],
+                n_resamples=1000,
+                seed=17,
+            )
+
+            accuracy = routed_ci.estimate
+            budget_values.append(fraction)
+            budget_accuracies.append(accuracy)
+            rows.append(
+                {
+                    "weak_model": weak_model,
+                    "strong_model": strong_model,
+                    "score": "weak_original_entropy",
+                    "target_top_fraction": fraction,
+                    "threshold": threshold,
+                    "test_n": len(test),
+                    "test_routed": int(routed.sum()),
+                    "test_routed_fraction": float(routed.mean()),
+                    "accuracy": accuracy,
+                    "accuracy_ci_low": routed_ci.low,
+                    "accuracy_ci_high": routed_ci.high,
+                    "accuracy_bootstrap_bca_low": boot.low,
+                    "accuracy_bootstrap_bca_high": boot.high,
+                    "all_weak_accuracy": all_weak["accuracy"],
+                    "all_weak_accuracy_ci_low": all_weak["accuracy_ci_low"],
+                    "all_weak_accuracy_ci_high": all_weak["accuracy_ci_high"],
+                    "all_strong_accuracy": all_strong["accuracy"],
+                    "all_strong_accuracy_ci_low": all_strong["accuracy_ci_low"],
+                    "all_strong_accuracy_ci_high": all_strong["accuracy_ci_high"],
+                    "random_expected_accuracy": random_expected,
+                    "oracle_accuracy": oracle_accuracy,
+                }
+            )
+
+        area = _trapezoid_auc(budget_values, budget_accuracies)
+        if area is not None:
+            for row in rows:
+                if row["weak_model"] == weak_model and row["strong_model"] == strong_model:
+                    row["cost_accuracy_auc"] = area
+
+    return rows
+
+
 def analyze_correlations(uncertainty_paths: list[Path]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in uncertainty_paths:
@@ -255,7 +461,9 @@ def analyze_correlations(uncertainty_paths: list[Path]) -> list[dict[str, Any]]:
             continue
         for variant_id, group in df.groupby("variant_id", dropna=False):
             entropy = pd.to_numeric(group["entropy"], errors="coerce")
-            verbalized = pd.to_numeric(group["verbalized_uncertainty"], errors="coerce")
+            msp_uncertainty = 1.0 - pd.to_numeric(group["msp"], errors="coerce")
+            margin_uncertainty = 1.0 - pd.to_numeric(group["margin"], errors="coerce")
+            consistency_entropy = pd.to_numeric(group["consistency_vote_entropy"], errors="coerce")
             rows.append(
                 {
                     "run_dir": str(path.parent),
@@ -264,14 +472,15 @@ def analyze_correlations(uncertainty_paths: list[Path]) -> list[dict[str, Any]]:
                     "variant_id": variant_id,
                     "n": int(len(group)),
                     "entropy_mean": _safe_float(entropy.mean()),
-                    "verbalized_uncertainty_mean": _safe_float(verbalized.mean()),
-                    "verbalized_uncertainty_unique": int(verbalized.nunique(dropna=True)),
-                    "pearson_entropy_verbalized_uncertainty": _pearson(entropy, verbalized),
-                    "spearman_entropy_verbalized_uncertainty": _spearman(entropy, verbalized),
-                    "pearson_entropy_consistency_entropy": _pearson(
-                        entropy,
-                        pd.to_numeric(group["consistency_vote_entropy"], errors="coerce"),
-                    ),
+                    "msp_uncertainty_mean": _safe_float(msp_uncertainty.mean()),
+                    "margin_uncertainty_mean": _safe_float(margin_uncertainty.mean()),
+                    "consistency_entropy_mean": _safe_float(consistency_entropy.mean()),
+                    "pearson_entropy_msp_uncertainty": _pearson(entropy, msp_uncertainty),
+                    "spearman_entropy_msp_uncertainty": _spearman(entropy, msp_uncertainty),
+                    "pearson_entropy_margin_uncertainty": _pearson(entropy, margin_uncertainty),
+                    "spearman_entropy_margin_uncertainty": _spearman(entropy, margin_uncertainty),
+                    "pearson_entropy_consistency_entropy": _pearson(entropy, consistency_entropy),
+                    "spearman_entropy_consistency_entropy": _spearman(entropy, consistency_entropy),
                 }
             )
     return rows
@@ -281,14 +490,21 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Analyze uncertainty-based routing on completed full-dataset bias runs.",
     )
-    parser.add_argument("--outputs-dir", type=Path, default=Path("outputs"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/routing_analysis"))
+    parser.add_argument("--outputs-dir", type=Path, default=output_path())
+    parser.add_argument("--output-dir", type=Path, default=output_path("routing_analysis"))
     parser.add_argument(
         "--routing-fractions",
         type=float,
         nargs="+",
         default=list(DEFAULT_ROUTING_FRACTIONS),
         help="Target top fractions to route, calibrated on the calibration split.",
+    )
+    parser.add_argument(
+        "--escalation-pair",
+        action="append",
+        default=[],
+        metavar="WEAK=STRONG",
+        help="Weak-to-strong model pair for escalation analysis. Can be repeated.",
     )
     return parser.parse_args()
 
@@ -298,21 +514,33 @@ def main() -> None:
     pair_paths = _latest_full_pair_summaries(args.outputs_dir)
     uncertainty_paths = sorted(args.outputs_dir.glob("*_full_*/*_uncertainty_scores.jsonl"))
     fractions = tuple(args.routing_fractions)
+    escalation_pairs = tuple(
+        tuple(item.split("=", 1)) for item in args.escalation_pair
+    ) or DEFAULT_ESCALATION_PAIRS
 
     routing_rows = analyze_pair_routing(pair_paths=pair_paths, routing_fractions=fractions)
+    escalation_rows = analyze_escalation_routing(
+        pair_paths=pair_paths,
+        routing_fractions=fractions,
+        model_pairs=escalation_pairs,  # type: ignore[arg-type]
+    )
     correlation_rows = analyze_correlations(uncertainty_paths)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     routing_df = pd.DataFrame(routing_rows)
+    escalation_df = pd.DataFrame(escalation_rows)
     correlation_df = pd.DataFrame(correlation_rows)
     routing_df.to_csv(args.output_dir / "routing_summary.csv", index=False)
+    escalation_df.to_csv(args.output_dir / "escalation_summary.csv", index=False)
     correlation_df.to_csv(args.output_dir / "uncertainty_correlations.csv", index=False)
     _write_json(args.output_dir / "routing_summary.json", routing_rows)
+    _write_json(args.output_dir / "escalation_summary.json", escalation_rows)
     _write_json(args.output_dir / "uncertainty_correlations.json", correlation_rows)
 
     print("Analyzed pair summaries:", len(pair_paths))
     print("Analyzed uncertainty files:", len(uncertainty_paths))
     print("Saved:", args.output_dir / "routing_summary.csv")
+    print("Saved:", args.output_dir / "escalation_summary.csv")
     print("Saved:", args.output_dir / "uncertainty_correlations.csv")
 
     if not routing_df.empty:
@@ -336,16 +564,31 @@ def main() -> None:
         ]
         print(best[columns].to_string(index=False))
 
+    if not escalation_df.empty:
+        print("\nWeak-to-strong escalation at target top fraction 0.5:")
+        columns = [
+            "weak_model",
+            "strong_model",
+            "test_routed_fraction",
+            "accuracy",
+            "all_weak_accuracy",
+            "all_strong_accuracy",
+            "random_expected_accuracy",
+            "oracle_accuracy",
+        ]
+        print(escalation_df[escalation_df["target_top_fraction"].eq(0.5)][columns].to_string(index=False))
+
     if not correlation_df.empty:
-        print("\nEntropy vs verbalized uncertainty correlations by run/variant:")
+        print("\nOutput-uncertainty correlations by run/variant:")
         columns = [
             "model_name",
             "bias_name",
             "variant_id",
             "n",
-            "verbalized_uncertainty_unique",
-            "pearson_entropy_verbalized_uncertainty",
-            "spearman_entropy_verbalized_uncertainty",
+            "pearson_entropy_msp_uncertainty",
+            "spearman_entropy_msp_uncertainty",
+            "pearson_entropy_consistency_entropy",
+            "spearman_entropy_consistency_entropy",
         ]
         print(correlation_df[columns].to_string(index=False))
 

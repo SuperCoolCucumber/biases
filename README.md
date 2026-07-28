@@ -1,29 +1,66 @@
 # biases
 
 Research scaffold for studying how LLM judges change their uncertainty under
-bias manipulations such as position, authority, bandwagon, and decoy effects.
+bias manipulations such as position, authority, and bandwagon effects.
 
 ## Current status
 
-The repository currently provides the typed core data model:
+The repository currently provides an end-to-end experiment and analysis
+pipeline:
 
-- experiment and example schemas in `src/biases/schemas.py`
-- utility helpers in `src/biases/utils.py`
-- a small CLI entrypoint in `src/biases/cli.py`
-
-The full experiment runner, dataset adapters, bias transforms, and backends are
-the next layers to add on top of these schemas.
+- typed experiment schemas in `src/biases/schemas.py`
+- MT-Bench loading and split preparation
+- vLLM-based judge runners for position, authority, and bandwagon bias
+- identical-answer and label-prior position controls
+- logit, consistency, and optional verbalized uncertainty extraction
+- routing and statistical analysis scripts
+- portable artifact-root configuration and Slurm rendering helpers
 
 ## Environment setup
 
 Use Python 3.12 and install the package:
 
 ```bash
+source scripts/artifact_env.sh
 uv sync --extra dev
 ```
 
 This installs the declared dependencies from `pyproject.toml` and makes the
-`biases` command available through `uv run`.
+`biases` command available through `uv run`. The environment script keeps
+package, Hugging Face, vLLM, torch, and Triton caches under one artifact root.
+
+## Storage layout
+
+Keep the repository for code and small text artifacts only. Datasets, model
+caches, checkpoints, and experiment outputs should live outside Git.
+
+Set an artifact root before running larger jobs:
+
+```bash
+export BIASES_ARTIFACT_ROOT=/path/to/biases-artifacts
+source scripts/artifact_env.sh
+```
+
+The expected artifact layout is:
+
+- `$BIASES_ARTIFACT_ROOT/data/processed/` for generated MT-Bench CSVs
+- `$BIASES_ARTIFACT_ROOT/outputs/` for experiment outputs and analyses
+- `$BIASES_ARTIFACT_ROOT/cache/` for Hugging Face, vLLM, and tool caches
+- `/tmp/$USER/$SLURM_JOB_ID/` for node-local scratch caches such as Triton
+
+If `BIASES_ARTIFACT_ROOT` is not set, the code defaults to a local
+`artifacts/` directory, which is ignored by Git.
+
+The repository ignores local `data/`, `outputs/`, `artifacts/`, `.cache/`,
+`checkpoints/`, and `models/` directories to avoid storing heavy artifacts.
+
+If you also want the virtualenv itself outside the repository, set this before
+`uv sync`:
+
+```bash
+export UV_PROJECT_ENVIRONMENT="$BIASES_ARTIFACT_ROOT/venvs/biases"
+uv sync --extra dev
+```
 
 ## How to use the code
 
@@ -45,14 +82,13 @@ To run the position-bias experiment on the local CSV sample with vLLM:
 
 ```bash
 uv sync --extra local --extra dev
-python main.py run-position --data-path data/processed/mtbench_stratified_198.csv
+python main.py run-position \
+  --data-path "${BIASES_ARTIFACT_ROOT:-artifacts}/data/processed/mtbench_stratified_198.csv"
 ```
 
-To submit the same experiment to SLURM with the dedicated launcher:
-
-```bash
-sbatch slurm/position_bias_qwen2_5_14b_vllm.slurm
-```
+For Slurm-based infrastructure, see `docs/slurm.md`. Existing Slurm launchers
+should be treated as templates: update scheduler directives, GPU counts, memory,
+and artifact paths for the target cluster before submission.
 
 ### Full MT-Bench Qwen3 runs
 
@@ -64,25 +100,24 @@ python scripts/prepare_mtbench_full_splits.py
 
 This writes:
 
-- `data/processed/mtbench_full.csv`
-- `data/processed/mtbench_full_calibration.csv`
-- `data/processed/mtbench_full_test.csv`
+- `$BIASES_ARTIFACT_ROOT/data/processed/mtbench_full.csv`
+- `$BIASES_ARTIFACT_ROOT/data/processed/mtbench_full_calibration.csv`
+- `$BIASES_ARTIFACT_ROOT/data/processed/mtbench_full_test.csv`
 
 The full CSV contains a `routing_split` column. The experiment runners preserve
 that value in raw records, pair summaries, and flat uncertainty-score files, so
 calibration/test routing analysis can be done after one full run.
 
-Submit the Qwen3 non-thinking full-dataset experiments:
+Render Slurm scripts for the Qwen3 non-thinking full-dataset experiments on
+systems that use Slurm:
 
 ```bash
-sbatch slurm/position_bias_qwen3_14b_bf16_full.slurm
-sbatch slurm/authority_bias_qwen3_14b_bf16_full.slurm
-sbatch slurm/bandwagon_bias_qwen3_14b_bf16_full.slurm
-
-sbatch slurm/position_bias_qwen3_32b_bf16_full.slurm
-sbatch slurm/authority_bias_qwen3_32b_bf16_full.slurm
-sbatch slurm/bandwagon_bias_qwen3_32b_bf16_full.slurm
+python scripts/render_slurm_jobs.py --kind controls --output-dir slurm/generated
+python scripts/render_slurm_jobs.py --kind phase3 --output-dir slurm/generated
 ```
+
+Add `--partition`, `--qos`, or `--account` if the target scheduler requires
+them. Review rendered scripts before submitting them with `sbatch`.
 
 For Qwen3, the runner prefills an empty thinking block before generation so the
 first generated token is the verdict label in non-thinking mode. The logit
@@ -90,6 +125,9 @@ uncertainty pass constrains that first token to tokenizer IDs for `A`, `B`, and
 `T`, then saves the resulting label probabilities, entropy, MSP, margin,
 verbalized confidence, and consistency entropy to
 `*_uncertainty_scores.jsonl`.
+
+See `docs/codex_handoff.md` for a compact handoff summary for future Codex
+sessions.
 
 ### 2. Create experiment objects in Python
 

@@ -4,16 +4,21 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-from datasets import load_dataset
+
+from biases.paths import configure_artifact_environment, data_path
+
+configure_artifact_environment()
+
+from datasets import load_dataset  # noqa: E402
 
 
 DEFAULT_DATASET_NAME = "lmsys/mt_bench_human_judgments"
 DEFAULT_SPLIT = "human"
 DEFAULT_SEED = 42
 DEFAULT_CALIBRATION_FRACTION = 0.5
-DEFAULT_FULL_OUTPUT_PATH = Path("data/processed/mtbench_full.csv")
-DEFAULT_CALIBRATION_OUTPUT_PATH = Path("data/processed/mtbench_full_calibration.csv")
-DEFAULT_TEST_OUTPUT_PATH = Path("data/processed/mtbench_full_test.csv")
+DEFAULT_FULL_OUTPUT_PATH = data_path("processed", "mtbench_full.csv")
+DEFAULT_CALIBRATION_OUTPUT_PATH = data_path("processed", "mtbench_full_calibration.csv")
+DEFAULT_TEST_OUTPUT_PATH = data_path("processed", "mtbench_full_test.csv")
 
 OUTPUT_COLUMNS = [
     "question_id",

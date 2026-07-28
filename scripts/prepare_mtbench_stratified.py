@@ -4,10 +4,14 @@ import argparse
 from pathlib import Path
 
 import pandas as pd
-from datasets import load_dataset
 
+from biases.paths import configure_artifact_environment, data_path
 
-DEFAULT_OUTPUT_PATH = Path("data/processed/mtbench_stratified_198.csv")
+configure_artifact_environment()
+
+from datasets import load_dataset  # noqa: E402
+
+DEFAULT_OUTPUT_PATH = data_path("processed", "mtbench_stratified_198.csv")
 DEFAULT_DATASET_NAME = "lmsys/mt_bench_human_judgments"
 DEFAULT_SPLIT = "human"
 DEFAULT_TARGET_SIZE = 200

@@ -179,14 +179,21 @@ def run_authority_experiment(
         pair_summaries.append(
             {
                 "pair_id": pair.pair_id,
+                "source_row_index": example.metadata.get("source_row_index"),
                 "routing_split": example.metadata.get("routing_split"),
                 "human_winner": human_winner,
                 "control_verdict": control.verdict,
                 "authority_congruent_verdict": congruent.verdict,
                 "authority_incongruent_verdict": incongruent.verdict,
                 "control_entropy": control_entropy,
+                "control_msp": control.uncertainty.logit.msp,
+                "control_margin": control.uncertainty.logit.margin,
                 "authority_congruent_entropy": congruent_entropy,
+                "authority_congruent_msp": congruent.uncertainty.logit.msp,
+                "authority_congruent_margin": congruent.uncertainty.logit.margin,
                 "authority_incongruent_entropy": incongruent_entropy,
+                "authority_incongruent_msp": incongruent.uncertainty.logit.msp,
+                "authority_incongruent_margin": incongruent.uncertainty.logit.margin,
                 "authority_congruent_delta_entropy": (
                     None if control_entropy is None or congruent_entropy is None else congruent_entropy - control_entropy
                 ),

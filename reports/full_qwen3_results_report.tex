@@ -1,0 +1,191 @@
+\section{Full-Dataset Qwen Results}
+\label{sec:full-qwen-results}
+
+We analyze the completed full-dataset runs for five open Qwen judges:
+Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B, Qwen3-14B, and Qwen3-32B. The full
+MT-Bench human-judgment data contains fixed calibration/test routing splits.
+Position bias is measured as a flip under answer-order swap. Authority and
+bandwagon bias are measured as the shift rate under the incongruent cue, where
+cue congruency is defined relative to the MT-Bench human winner. For routing,
+thresholds are calibrated on the calibration split and evaluated on the
+held-out test split.
+
+The main comparison is within the Qwen3.5 family, where model size can be
+interpreted more directly. Qwen3-14B and Qwen3-32B are reported in separate
+reference tables because they belong to a different model family and should not
+be interpreted as points on the same scaling curve.
+
+\paragraph{Qwen3.5 bias and uncertainty.}
+Table~\ref{tab:qwen35-bias-results} shows a non-monotonic but informative
+within-family pattern. Qwen3.5-4B is highly unstable under position swap:
+only $1726$ pairs are usable for flip analysis and $58.5\%$ of them flip. Its
+entropy also fails to distinguish flipped from stable items ($0.97\times$).
+Qwen3.5-9B is much more stable on position bias ($11.0\%$ flips) and shows a
+clearer entropy signal ($1.66\times$), but it is more sensitive to cue-based
+biases than 4B. Qwen3.5-27B has a moderate position-flip rate ($15.2\%$) and
+the cleanest Qwen3.5 position entropy separation ($1.94\times$), while its
+authority and bandwagon shift rates drop sharply to $7.0\%$ and $5.9\%$.
+Across cue-based biases, incongruent cues increase entropy for all Qwen3.5
+models.
+
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{llrrrrr}
+\toprule
+Model & Bias & $N$ & Event Rate & Base $H$ & Affected $H$ & $\Delta H$ / Ratio \\
+\midrule
+Qwen3.5-4B  & Position  & 1726 & 58.5\% & 1.119 & 1.083 & $0.97\times$ \\
+Qwen3.5-9B  & Position  & 3089 & 11.0\% & 0.784 & 1.304 & $1.66\times$ \\
+Qwen3.5-27B & Position  & 3325 & 15.2\% & 0.586 & 1.138 & $1.94\times$ \\
+Qwen3.5-4B  & Authority & 2575 & 17.1\% & 1.078 & 1.128 & $+0.051$ \\
+Qwen3.5-9B  & Authority & 2575 & 23.2\% & 0.859 & 1.147 & $+0.289$ \\
+Qwen3.5-27B & Authority & 2575 &  7.0\% & 0.588 & 0.633 & $+0.045$ \\
+Qwen3.5-4B  & Bandwagon & 2575 & 17.8\% & 1.074 & 1.171 & $+0.097$ \\
+Qwen3.5-9B  & Bandwagon & 2575 & 29.7\% & 0.852 & 1.191 & $+0.339$ \\
+Qwen3.5-27B & Bandwagon & 2575 &  5.9\% & 0.575 & 0.622 & $+0.047$ \\
+\bottomrule
+\end{tabular}
+\caption{Bias effect rates and entropy differences within the Qwen3.5 model
+family. For position, the event is an order-swap flip; base and affected
+entropy are computed over stable and flipped original-order items. For
+authority and bandwagon, the event is an incongruent-cue shift from control;
+base and affected entropy are control and incongruent entropy.}
+\label{tab:qwen35-bias-results}
+\end{table*}
+
+\paragraph{Qwen3.5 entropy routing.}
+We evaluate a budgeted router that routes the top half of test items by entropy,
+with thresholds selected on the calibration split. Table~\ref{tab:qwen35-routing}
+shows that entropy becomes more useful as the Qwen3.5 family scales. Qwen3.5-4B
+is the failure case for position routing: despite its large flip rate, entropy
+is almost random for detecting flips (AUC $0.528$). Qwen3.5-9B and Qwen3.5-27B
+are much better, with position-routing AUCs of $0.800$ and $0.853$. For
+cue-based shifts, Qwen3.5-27B has the strongest AUCs ($0.902$ authority,
+$0.904$ bandwagon), but precision is low because the event rates themselves are
+small. Thus, the 27B model is both less biased under cues and easier to route
+when cue shifts occur.
+
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{llrrrr}
+\toprule
+Model & Routed Event & Routed & Recall & Precision & AUC \\
+\midrule
+Qwen3.5-4B  & Position flips   & 51.0\% & 53.6\% & 32.6\% & 0.528 \\
+Qwen3.5-9B  & Position flips   & 51.3\% & 93.1\% & 18.7\% & 0.800 \\
+Qwen3.5-27B & Position flips   & 47.5\% & 91.0\% & 30.4\% & 0.853 \\
+Qwen3.5-4B  & Authority shifts & 47.7\% & 81.3\% & 29.8\% & 0.755 \\
+Qwen3.5-9B  & Authority shifts & 51.0\% & 91.3\% & 42.9\% & 0.831 \\
+Qwen3.5-27B & Authority shifts & 47.4\% & 100.0\% & 14.7\% & 0.902 \\
+Qwen3.5-4B  & Bandwagon shifts & 48.1\% & 92.0\% & 33.4\% & 0.849 \\
+Qwen3.5-9B  & Bandwagon shifts & 50.8\% & 82.1\% & 49.8\% & 0.778 \\
+Qwen3.5-27B & Bandwagon shifts & 47.7\% & 100.0\% & 13.8\% & 0.904 \\
+\bottomrule
+\end{tabular}
+\caption{Entropy-based routing within the Qwen3.5 model family. Thresholds are
+calibrated on the calibration split to route roughly the top half of test items
+by original entropy for position and control entropy for authority/bandwagon.}
+\label{tab:qwen35-routing}
+\end{table*}
+
+\paragraph{Qwen3 reference models.}
+Tables~\ref{tab:qwen3-bias-results} and~\ref{tab:qwen3-routing} report the
+Qwen3-14B and Qwen3-32B runs separately. These models are not part of the
+Qwen3.5 size comparison, but they provide useful reference points. Both have
+moderate position-flip rates ($17.9\%$ and $15.6\%$) and much cleaner position
+entropy separation than Qwen3.5-9B or Qwen3.5-27B. Cue-based behavior differs:
+Qwen3-14B is more sensitive to authority and bandwagon cues, while Qwen3-32B
+has stronger entropy routing, especially for bandwagon shifts.
+
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{llrrrrr}
+\toprule
+Model & Bias & $N$ & Event Rate & Base $H$ & Affected $H$ & $\Delta H$ / Ratio \\
+\midrule
+Qwen3-14B & Position  & 3329 & 17.9\% & 0.039 & 0.180 & $4.64\times$ \\
+Qwen3-32B & Position  & 3319 & 15.6\% & 0.219 & 0.776 & $3.54\times$ \\
+Qwen3-14B & Authority & 2575 & 36.6\% & 0.058 & 0.103 & $+0.045$ \\
+Qwen3-32B & Authority & 2575 & 32.3\% & 0.250 & 0.550 & $+0.300$ \\
+Qwen3-14B & Bandwagon & 2575 & 31.6\% & 0.056 & 0.101 & $+0.045$ \\
+Qwen3-32B & Bandwagon & 2575 & 18.1\% & 0.252 & 0.463 & $+0.210$ \\
+\bottomrule
+\end{tabular}
+\caption{Bias effect rates and entropy differences for the Qwen3 reference
+models. Metrics are defined as in Table~\ref{tab:qwen35-bias-results}.}
+\label{tab:qwen3-bias-results}
+\end{table*}
+
+\begin{table*}[t]
+\centering
+\small
+\setlength{\tabcolsep}{6pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{llrrrr}
+\toprule
+Model & Routed Event & Routed & Recall & Precision & AUC \\
+\midrule
+Qwen3-14B & Position flips   & 48.9\% & 97.6\% & 34.7\% & 0.883 \\
+Qwen3-32B & Position flips   & 49.2\% & 97.2\% & 29.3\% & 0.872 \\
+Qwen3-14B & Authority shifts & 50.0\% & 66.5\% & 49.8\% & 0.636 \\
+Qwen3-32B & Authority shifts & 50.6\% & 88.8\% & 57.2\% & 0.818 \\
+Qwen3-14B & Bandwagon shifts & 50.1\% & 69.2\% & 45.3\% & 0.671 \\
+Qwen3-32B & Bandwagon shifts & 50.5\% & 99.6\% & 36.9\% & 0.876 \\
+\bottomrule
+\end{tabular}
+\caption{Entropy-based routing for Qwen3-14B and Qwen3-32B. Thresholds are
+calibrated using the same protocol as Table~\ref{tab:qwen35-routing}.}
+\label{tab:qwen3-routing}
+\end{table*}
+
+\paragraph{Verbalized uncertainty.}
+Verbalized uncertainty is not a reliable replacement for entropy. Within
+Qwen3.5, the entropy--verbalized-uncertainty correlation is near zero for 4B
+and 9B, but becomes moderate for 27B (Pearson $r=0.45$, Spearman $\rho=0.41$;
+Table~\ref{tab:entropy-verbalized-correlation}). Qwen3-32B shows a similar
+moderate association, while Qwen3-14B is weaker. In practice, verbalized
+confidence is also quantized, especially for Qwen3.5-9B, which uses only about
+three to four distinct uncertainty levels across variants. We therefore treat
+verbalized uncertainty as an auxiliary diagnostic, not as the main routing
+threshold.
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.08}
+\begin{tabular}{lrr}
+\toprule
+Model & Pearson $r$ & Spearman $\rho$ \\
+\midrule
+Qwen3.5-4B  &  0.06 & 0.08 \\
+Qwen3.5-9B  & -0.02 & 0.03 \\
+Qwen3.5-27B &  0.45 & 0.41 \\
+Qwen3-14B   &  0.14 & 0.30 \\
+Qwen3-32B   &  0.37 & 0.41 \\
+\bottomrule
+\end{tabular}
+\caption{Average correlation between entropy and verbalized uncertainty across
+full-dataset runs and prompt variants.}
+\label{tab:entropy-verbalized-correlation}
+\end{table}
+
+\paragraph{Takeaway.}
+The Qwen3.5 family shows that larger judges are not uniformly less biased, but
+their uncertainty can become more useful. Moving from 4B to 9B greatly reduces
+position instability, while moving to 27B sharply reduces cue-induced shifts
+and improves entropy routing for authority and bandwagon. The Qwen3 reference
+models show stronger position entropy separation, but they are not directly
+comparable as a size trend because they belong to a different model family.
+Overall, entropy remains the most useful routing signal; verbalized uncertainty
+is informative only for some larger models and is not sufficiently controlled
+for budgeted routing.

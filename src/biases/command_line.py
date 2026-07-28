@@ -7,11 +7,16 @@ from typing import Sequence
 
 from biases.authority_bias import run_authority_experiment
 from biases.bandwagon_bias import run_bandwagon_experiment
+from biases.paths import output_path
 from biases.position_bias import (
     DEFAULT_DATA_PATH,
     DEFAULT_MAX_MODEL_LEN,
     DEFAULT_MODEL_NAME,
     run_position_experiment,
+)
+from biases.position_controls import (
+    run_identical_answer_control,
+    run_label_prior_control,
 )
 from biases.schemas import (
     BiasCondition,
@@ -169,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     position_parser.add_argument(
         "--output-dir",
-        default="outputs/position_bias_qwen2_5_14b_vllm",
+        default=str(output_path("position_bias_qwen2_5_14b_vllm")),
         help="Directory where run artifacts will be written.",
     )
     _add_common_vllm_args(position_parser)
@@ -180,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     authority_parser.add_argument(
         "--output-dir",
-        default="outputs/authority_bias_qwen2_5_14b_vllm",
+        default=str(output_path("authority_bias_qwen2_5_14b_vllm")),
         help="Directory where run artifacts will be written.",
     )
     _add_common_vllm_args(authority_parser)
@@ -191,10 +196,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bandwagon_parser.add_argument(
         "--output-dir",
-        default="outputs/bandwagon_bias_qwen2_5_14b_vllm",
+        default=str(output_path("bandwagon_bias_qwen2_5_14b_vllm")),
         help="Directory where run artifacts will be written.",
     )
     _add_common_vllm_args(bandwagon_parser)
+
+    identical_parser = subparsers.add_parser(
+        "run-identical-position-control",
+        help="Run the identical-answer position control.",
+    )
+    identical_parser.add_argument(
+        "--output-dir",
+        default=str(output_path("position_identical_answer_control")),
+        help="Directory where run artifacts will be written.",
+    )
+    identical_parser.add_argument(
+        "--source-side",
+        default="human_winner",
+        choices=["A", "B", "human_winner"],
+        help="Which source answer to duplicate into both slots.",
+    )
+    _add_common_vllm_args(identical_parser)
+
+    label_prior_parser = subparsers.add_parser(
+        "run-label-prior-control",
+        help="Run the placeholder label-token-prior control.",
+    )
+    label_prior_parser.add_argument(
+        "--output-dir",
+        default=str(output_path("position_label_prior_control")),
+        help="Directory where run artifacts will be written.",
+    )
+    _add_common_vllm_args(label_prior_parser)
     return parser
 
 
@@ -256,6 +289,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             gpu_memory_utilization=args.gpu_memory_utilization,
             dtype=args.dtype,
             include_verbalized_confidence=not args.skip_verbalized_confidence,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "run-identical-position-control":
+        summary = run_identical_answer_control(
+            csv_path=Path(args.data_path),
+            output_dir=Path(args.output_dir),
+            model_name=args.model_name,
+            limit=args.limit,
+            source_side=args.source_side,
+            tensor_parallel_size=args.tensor_parallel_size,
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            dtype=args.dtype,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "run-label-prior-control":
+        summary = run_label_prior_control(
+            output_dir=Path(args.output_dir),
+            model_name=args.model_name,
+            tensor_parallel_size=args.tensor_parallel_size,
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            dtype=args.dtype,
         )
         print(json.dumps(summary, indent=2))
         return 0
