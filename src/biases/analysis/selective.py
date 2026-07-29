@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import random
 import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+
+import numpy as np
 
 from biases.analysis.records import LABELS, ConditionRecord, normalize_label, opposite_label
 from biases.analysis.resampling import cluster_resamples, percentile
@@ -231,42 +236,51 @@ def risk_coverage_curve(
     *,
     confidence_channel: str = "msp",
 ) -> RiskCoverageResult:
-    valid = [
-        (prediction, confidence_value(prediction, confidence_channel))
-        for prediction in predictions
-        if prediction.human_winner is not None
-        and confidence_value(prediction, confidence_channel) is not None
-    ]
+    valid: list[tuple[ScoredPrediction, float]] = []
+    for prediction in predictions:
+        if prediction.human_winner is None:
+            continue
+        confidence = confidence_value(prediction, confidence_channel)
+        if confidence is not None:
+            valid.append((prediction, confidence))
     if not valid:
         return RiskCoverageResult(n=0, aurc=None, points=())
-    thresholds = sorted(
-        {float(confidence) for _, confidence in valid if confidence is not None},
-        reverse=True,
-    )
-    points = [RiskCoveragePoint(threshold=math.inf, coverage=0.0, risk=0.0, accepted=0, total=len(valid))]
-    for threshold in thresholds:
-        accepted = [
-            (item, confidence)
-            for item, confidence in valid
-            if float(confidence) >= threshold
-        ]
-        errors = sum(
-            item.verdict != item.human_winner for item, _ in accepted
+
+    ranked = sorted(valid, key=lambda item: item[1], reverse=True)
+    total = len(ranked)
+    points = [
+        RiskCoveragePoint(
+            threshold=math.inf,
+            coverage=0.0,
+            risk=0.0,
+            accepted=0,
+            total=total,
         )
+    ]
+    accepted = 0
+    errors = 0
+    cursor = 0
+    while cursor < total:
+        threshold = ranked[cursor][1]
+        while cursor < total and ranked[cursor][1] == threshold:
+            prediction, _ = ranked[cursor]
+            accepted += 1
+            errors += prediction.verdict != prediction.human_winner
+            cursor += 1
         points.append(
             RiskCoveragePoint(
                 threshold=threshold,
-                coverage=len(accepted) / len(valid),
-                risk=errors / len(accepted),
-                accepted=len(accepted),
-                total=len(valid),
+                coverage=accepted / total,
+                risk=errors / accepted,
+                accepted=accepted,
+                total=total,
             )
         )
     area = sum(
         (right.coverage - left.coverage) * (left.risk + right.risk) / 2.0
         for left, right in zip(points, points[1:])
     )
-    return RiskCoverageResult(n=len(valid), aurc=area, points=tuple(points))
+    return RiskCoverageResult(n=total, aurc=area, points=tuple(points))
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +291,81 @@ class ThresholdRule:
     calibration_n: int
     calibration_coverage: float
     calibration_risk: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ThresholdRuleBootstrap:
+    rule: ThresholdRule
+    sampled_rules: tuple[ThresholdRule, ...]
+    calibration_fingerprint: str
+    n_calibration_clusters: int
+    n_resamples: int
+    seed: int
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterBootstrapDraws:
+    cluster_keys: tuple[str, ...]
+    draw_counts: np.ndarray
+    n_resamples: int
+    seed: int
+
+
+def _calibration_fingerprint(
+    predictions: Sequence[ScoredPrediction],
+    confidence_channel: str,
+) -> str:
+    rows = [
+        (
+            prediction.question_id,
+            prediction.record_id,
+            prediction.verdict,
+            prediction.human_winner,
+            confidence_value(prediction, confidence_channel),
+        )
+        for prediction in predictions
+    ]
+    rows.sort(key=repr)
+    return hashlib.sha256(
+        json.dumps(
+            rows,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def cluster_bootstrap_draws(
+    predictions: Sequence[ScoredPrediction],
+    *,
+    n_resamples: int = 2000,
+    seed: int = 43,
+) -> ClusterBootstrapDraws:
+    """Precompute reusable question-cluster multiplicities for test draws."""
+
+    if not predictions:
+        raise ValueError("predictions must not be empty")
+    if n_resamples < 1:
+        raise ValueError("n_resamples must be positive")
+    cluster_keys = tuple(
+        sorted({prediction.question_id for prediction in predictions}, key=repr)
+    )
+    rng = random.Random(seed)
+    draw_counts = np.zeros(
+        (n_resamples, len(cluster_keys)),
+        dtype=np.int32,
+    )
+    for draw_index in range(n_resamples):
+        for _ in cluster_keys:
+            sampled_index = rng.randrange(len(cluster_keys))
+            draw_counts[draw_index, sampled_index] += 1
+    draw_counts.setflags(write=False)
+    return ClusterBootstrapDraws(
+        cluster_keys=cluster_keys,
+        draw_counts=draw_counts,
+        n_resamples=n_resamples,
+        seed=seed,
+    )
 
 
 def calibrate_threshold_at_target_risk(
@@ -313,6 +402,56 @@ def calibrate_threshold_at_target_risk(
         calibration_n=curve.n,
         calibration_coverage=selected.coverage,
         calibration_risk=selected.risk,
+    )
+
+
+def bootstrap_threshold_rules(
+    clean_calibration: Sequence[ScoredPrediction],
+    *,
+    target_risk: float,
+    confidence_channel: str = "msp",
+    n_resamples: int = 2000,
+    seed: int = 42,
+) -> ThresholdRuleBootstrap:
+    """Calibrate the full-sample rule and reusable clustered bootstrap rules."""
+
+    if n_resamples < 1:
+        raise ValueError("n_resamples must be positive")
+    rule = calibrate_threshold_at_target_risk(
+        clean_calibration,
+        target_risk=target_risk,
+        confidence_channel=confidence_channel,
+    )
+    calibration_fingerprint = _calibration_fingerprint(
+        clean_calibration,
+        confidence_channel,
+    )
+    sampled_rules = (
+        tuple(
+            calibrate_threshold_at_target_risk(
+                sample,
+                target_risk=target_risk,
+                confidence_channel=confidence_channel,
+            )
+            for sample in cluster_resamples(
+                clean_calibration,
+                cluster_key=lambda prediction: prediction.question_id,
+                n_resamples=n_resamples,
+                seed=seed,
+            )
+        )
+        if clean_calibration
+        else ()
+    )
+    return ThresholdRuleBootstrap(
+        rule=rule,
+        sampled_rules=sampled_rules,
+        calibration_fingerprint=calibration_fingerprint,
+        n_calibration_clusters=len(
+            {prediction.question_id for prediction in clean_calibration}
+        ),
+        n_resamples=n_resamples,
+        seed=seed,
     )
 
 
@@ -380,6 +519,121 @@ def evaluate_threshold_transfer(
     )
 
 
+def _clustered_transfer_metric_samples(
+    predictions: Sequence[ScoredPrediction],
+    sampled_rules: Sequence[ThresholdRule],
+    *,
+    draws: ClusterBootstrapDraws,
+) -> dict[str, list[float]]:
+    """Evaluate transfer draws from per-question sufficient statistics."""
+
+    metrics: dict[str, list[float]] = {
+        "realized_risk": [],
+        "risk_inflation_vs_target": [],
+        "risk_inflation_vs_clean_calibration": [],
+        "accepted_flip_fraction": [],
+    }
+    if not predictions or not sampled_rules:
+        return metrics
+    if len(sampled_rules) != draws.n_resamples:
+        raise ValueError("sampled_rules and cluster draws must have equal length")
+
+    confidence_channel = sampled_rules[0].confidence_channel
+    target_risk = sampled_rules[0].target_risk
+    if any(
+        rule.confidence_channel != confidence_channel
+        or rule.target_risk != target_risk
+        for rule in sampled_rules
+    ):
+        raise ValueError("all sampled threshold rules must share channel and target")
+
+    grouped: dict[str, list[ScoredPrediction]] = defaultdict(list)
+    for prediction in predictions:
+        grouped[prediction.question_id].append(prediction)
+    cluster_keys = tuple(sorted(grouped, key=repr))
+    if cluster_keys != draws.cluster_keys:
+        raise ValueError("cluster draws do not match the test prediction clusters")
+
+    thresholds = np.asarray(
+        [rule.threshold for rule in sampled_rules],
+        dtype=np.float64,
+    )
+    accepted = np.zeros(draws.n_resamples, dtype=np.int64)
+    errors = np.zeros(draws.n_resamples, dtype=np.int64)
+    flips = np.zeros(draws.n_resamples, dtype=np.int64)
+    accepted_flips = np.zeros(draws.n_resamples, dtype=np.int64)
+
+    for cluster_index, cluster_key in enumerate(cluster_keys):
+        rows = [
+            (prediction, confidence)
+            for prediction in grouped[cluster_key]
+            if prediction.human_winner is not None
+            and (
+                confidence := confidence_value(
+                    prediction,
+                    confidence_channel,
+                )
+            )
+            is not None
+        ]
+        rows.sort(key=lambda item: item[1])
+        confidences = np.asarray(
+            [confidence for _, confidence in rows],
+            dtype=np.float64,
+        )
+        row_count = len(rows)
+        first_accepted = np.searchsorted(
+            confidences,
+            thresholds,
+            side="left",
+        )
+        accepted_by_threshold = row_count - first_accepted
+
+        error_suffix = np.zeros(row_count + 1, dtype=np.int64)
+        accepted_flip_suffix = np.zeros(row_count + 1, dtype=np.int64)
+        for row_index in range(row_count - 1, -1, -1):
+            prediction = rows[row_index][0]
+            error_suffix[row_index] = (
+                error_suffix[row_index + 1]
+                + (prediction.verdict != prediction.human_winner)
+            )
+            accepted_flip_suffix[row_index] = (
+                accepted_flip_suffix[row_index + 1]
+                + (prediction.flip is True)
+            )
+
+        multiplicity = draws.draw_counts[:, cluster_index].astype(
+            np.int64,
+            copy=False,
+        )
+        accepted += multiplicity * accepted_by_threshold
+        errors += multiplicity * error_suffix[first_accepted]
+        cluster_flips = sum(
+            prediction.flip is True for prediction, _ in rows
+        )
+        flips += multiplicity * cluster_flips
+        accepted_flips += (
+            multiplicity * accepted_flip_suffix[first_accepted]
+        )
+
+    for draw_index, rule in enumerate(sampled_rules):
+        if accepted[draw_index] > 0:
+            realized_risk = errors[draw_index] / accepted[draw_index]
+            metrics["realized_risk"].append(float(realized_risk))
+            metrics["risk_inflation_vs_target"].append(
+                float(realized_risk - rule.target_risk)
+            )
+            if rule.calibration_risk is not None:
+                metrics["risk_inflation_vs_clean_calibration"].append(
+                    float(realized_risk - rule.calibration_risk)
+                )
+        if flips[draw_index] > 0:
+            metrics["accepted_flip_fraction"].append(
+                float(accepted_flips[draw_index] / flips[draw_index])
+            )
+    return metrics
+
+
 @dataclass(frozen=True, slots=True)
 class ThresholdTransferWithCI:
     rule: ThresholdRule
@@ -408,6 +662,8 @@ def clean_calibrated_threshold_transfer_with_cluster_bootstrap(
     confidence: float = 0.95,
     n_resamples: int = 2000,
     seed: int = 42,
+    threshold_bootstrap: ThresholdRuleBootstrap | None = None,
+    test_bootstrap: ClusterBootstrapDraws | None = None,
 ) -> ThresholdTransferWithCI:
     """Calibrate on clean data, then bootstrap calibration and test questions.
 
@@ -418,11 +674,29 @@ def clean_calibrated_threshold_transfer_with_cluster_bootstrap(
 
     if not 0.0 < confidence < 1.0:
         raise ValueError("confidence must be in (0, 1)")
-    rule = calibrate_threshold_at_target_risk(
+    calibrated = threshold_bootstrap or bootstrap_threshold_rules(
         clean_calibration,
         target_risk=target_risk,
         confidence_channel=confidence_channel,
+        n_resamples=n_resamples,
+        seed=seed,
     )
+    expected_fingerprint = _calibration_fingerprint(
+        clean_calibration,
+        confidence_channel,
+    )
+    if (
+        calibrated.rule.target_risk != target_risk
+        or calibrated.rule.confidence_channel != confidence_channel
+        or calibrated.calibration_fingerprint != expected_fingerprint
+        or calibrated.n_resamples != n_resamples
+        or calibrated.seed != seed
+    ):
+        raise ValueError(
+            "threshold_bootstrap does not match the calibration data, channel, "
+            "target, resample count, and seed"
+        )
+    rule = calibrated.rule
     estimate = evaluate_threshold_transfer(biased_test, rule)
     metrics: dict[str, list[float]] = {
         "realized_risk": [],
@@ -431,33 +705,23 @@ def clean_calibrated_threshold_transfer_with_cluster_bootstrap(
         "accepted_flip_fraction": [],
     }
     if clean_calibration and biased_test:
-        calibration_samples = cluster_resamples(
-            clean_calibration,
-            cluster_key=lambda prediction: prediction.question_id,
-            n_resamples=n_resamples,
-            seed=seed,
-        )
-        test_samples = cluster_resamples(
+        draws = test_bootstrap or cluster_bootstrap_draws(
             biased_test,
-            cluster_key=lambda prediction: prediction.question_id,
             n_resamples=n_resamples,
             seed=seed + 1,
         )
-        for calibration_sample, test_sample in zip(
-            calibration_samples,
-            test_samples,
-            strict=True,
+        if (
+            draws.n_resamples != n_resamples
+            or draws.seed != seed + 1
         ):
-            sampled_rule = calibrate_threshold_at_target_risk(
-                calibration_sample,
-                target_risk=target_risk,
-                confidence_channel=confidence_channel,
+            raise ValueError(
+                "test_bootstrap does not match the requested resample count and seed"
             )
-            sampled = evaluate_threshold_transfer(test_sample, sampled_rule)
-            for field in metrics:
-                value = getattr(sampled, field)
-                if value is not None and math.isfinite(value):
-                    metrics[field].append(float(value))
+        metrics = _clustered_transfer_metric_samples(
+            biased_test,
+            calibrated.sampled_rules,
+            draws=draws,
+        )
     alpha = 1.0 - confidence
 
     def bounds(name: str) -> tuple[float | None, float | None]:
@@ -494,9 +758,7 @@ def clean_calibrated_threshold_transfer_with_cluster_bootstrap(
         accepted_flip_fraction_ci_low=flips_low,
         accepted_flip_fraction_ci_high=flips_high,
         confidence=confidence,
-        n_calibration_clusters=len(
-            {prediction.question_id for prediction in clean_calibration}
-        ),
+        n_calibration_clusters=calibrated.n_calibration_clusters,
         n_test_clusters=len({prediction.question_id for prediction in biased_test}),
         n_resamples=n_resamples,
     )

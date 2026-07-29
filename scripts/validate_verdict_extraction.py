@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from biases.models import get_model_profile
+from biases.pairing import file_sha256
 from biases.paths import data_path, output_path
 from biases.position_bias import DEFAULT_MAX_MODEL_LEN, VLLMJudge, load_position_pairs
 from biases.schemas import (
@@ -21,6 +22,7 @@ from biases.social_cue_prompts import (
     build_social_cue_prompt_package,
     format_clean_variant_id,
 )
+from biases.utils import stable_hash
 
 
 DEFAULT_DATA_PATH = data_path("processed", "mtbench_stratified_198.csv")
@@ -98,6 +100,7 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
         dtype=args.dtype,
     )
     prompts: list[str] = []
+    prompt_hashes: list[str] = []
     for pair in pairs:
         condition = BiasCondition(
             bias_type=BiasType.CLEAN,
@@ -112,6 +115,7 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
             renderer=judge.render_messages,
         )
         prompts.append(package.prompt_text)
+        prompt_hashes.append(package.prompt_hash)
 
     results = judge.choose_verdict_batch(
         prompts,
@@ -126,7 +130,10 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "model_registry_name": profile.registry_name,
         "model_name": profile.hf_model_name,
+        "model_revision": profile.revision,
         "data_path": str(args.data_path),
+        "input_file_hash": file_sha256(args.data_path),
+        "prompt_set_hash": stable_hash(prompt_hashes),
         "resolved_verdict_token_ids": judge.decision_label_token_ids,
         **validation,
     }

@@ -150,39 +150,43 @@ Before promoting a judge model to a full run, require:
 4. observed generation counts matching the budget plan; and
 5. two byte-identical paper-asset regenerations from the same inputs.
 
-## Completed Silent-Bias Pilot
+## Retracted Pilot and 2026-07-29 Preflight Correction
 
-The real 198-row pilot completed end to end for `Qwen/Qwen3-4B` with the
-reduced `k=4` boundary-dose consistency schedule:
+Do not use the previous Qwen3-4B pilot for behavioral conclusions. Its
+conversation columns were Python literal strings, but the old loader only
+accepted JSON and therefore judged serialized conversations instead of the
+selected MT-Bench turn. The old Stage A/B and analysis hashes remain in Git
+history solely as an engineering audit trail. The tracked preliminary report
+is marked retracted until a corrected pilot replaces it.
 
-- verdict-extraction smoke: 20/20 parseable verdicts and 20/20 normalized
-  constrained label distributions;
-- Stage A: 396 clean records (198 AB and 198 BA);
-- Stage B: 6,336 cued records (3,168 authority and 3,168 bandwagon), evenly
-  split between congruent and incongruent directions;
-- all 396 clean pair keys have the expected 16 cued partners, all 3,168
-  condition groups have both ordering twins, and both planning-issue files
-  are empty;
-- consistency sampling is present on 3,168 boundary-dose records and omitted
-  on 3,168 sanctioned middle-dose records; logit and verbalized channels are
-  complete throughout;
-- the analysis contains 6,336 paired shifts with zero unmatched cued records
-  and zero unused clean records.
+The repaired data path now:
 
-Pilot provenance:
+- pins the upstream MT-Bench revision and writes conversation columns as
+  canonical JSON while safely accepting legacy Python literals;
+- selects question 1 / answer 1 for source turn 1;
+- preserves both questions and assistant turns for source turn 2 while
+  explicitly marking the second answer as the evaluation target;
+- records the extraction mode and selected turn in run artifacts; and
+- validates exact turn-1 and turn-2 prompt content in tests.
 
-- processed-data SHA-256:
-  `5983747255fdd73b4dd2375b80822629240e34778e5372d2cdfc4ec9278c0325`;
-- Stage A score SHA-256:
-  `27f35e5255dd4ca7dc77e5beb3d0240ff353acf3744cf16769209af164bd1418`;
-- Stage B score SHA-256:
-  `582f6e6ee0a9f5947b6a19fe0ac1f20444ade52981b72fb901eb84bd390b72fa`;
-- analysis-spec hash:
-  `785e6d18b8d202d531acf5a1906fbfce3402c355e530e40aa86bea42c4aa7df5`.
+Regenerated inputs:
 
-The 2,000-resample/10,000-permutation analysis package and all five paper
-figures, booktabs tables, manifests, and claims-to-evidence digest regenerate
-byte-identically from the copied inputs. This is a single-model pilot and
-pipeline-validation result, not the multi-model/full-data evidence needed for
-paper claims; full MT-Bench runs and the additional judge families remain
-pending.
+- pilot: 198/198 usable pairs, 99 calibration and 99 test rows, SHA-256
+  `d0e2dd12c5c6a2b378b12ab0ab363850147f1fa501fd13d25860737fc80d6b7a`;
+- full: 3,355 source rows, 3,346 usable pairs, 1,677 calibration and 1,678
+  test rows, SHA-256
+  `26cbf6de9985ddf6c5d7bacc7c46df8242882180a99b8489dab82abb90d13a54`.
+
+The nine unusable full rows are all question 127, turn 1, with an empty source
+candidate response. Full-run gates use 3,346 pairs: 6,692 Stage A and 107,072
+Stage B records per model. Checkpointing now appends crash-safe batches instead
+of rewriting the growing raw JSONL at every batch. RQ2 risk-coverage is
+`O(n log n)`, and clean/test cluster-bootstrap work is reused through exact
+question-level sufficient statistics. Rerun all four model smokes and the
+entire 198-pair pilot before starting full inference.
+
+The prescribed row-level split is not question-disjoint: all 80 full-data
+question IDs occur in both calibration and test. Preserve it for the primary
+analysis as required by `docs/experiment_plan.md`, but report this dependence
+prominently and add a question-disjoint robustness analysis before claiming
+transfer to unseen questions.

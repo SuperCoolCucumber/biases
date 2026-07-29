@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from biases.analysis.dose_response import (
@@ -11,11 +13,17 @@ from biases.analysis.dose_response import (
 )
 from biases.analysis.modeling import MIXED_EFFECTS_FORMULA, fit_uncertainty_gee
 from biases.analysis.records import record_from_mapping
+from biases.analysis.resampling import cluster_resamples, percentile
 from biases.analysis.selective import (
+    RiskCoveragePoint,
+    RiskCoverageResult,
     ScoredPrediction,
+    bootstrap_threshold_rules,
     calibrate_threshold_at_target_risk,
     calibration_summary,
+    cluster_bootstrap_draws,
     clean_calibrated_threshold_transfer_with_cluster_bootstrap,
+    confidence_value,
     evaluate_threshold_transfer,
     paired_correctness_mcnemar,
     risk_coverage_curve,
@@ -30,13 +38,14 @@ def _prediction(
     confidence: float,
     *,
     verdict: str,
-    human: str,
+    human: str | None,
     probabilities: tuple[float, float, float],
     flip: bool | None = None,
+    question_id: str | None = None,
 ) -> ScoredPrediction:
     return ScoredPrediction(
         record_id=record_id,
-        question_id=record_id,
+        question_id=question_id or record_id,
         pair_key=record_id,
         ordering="ab",
         model_name="judge",
@@ -51,6 +60,122 @@ def _prediction(
         confidence=confidence,
         flip=flip,
     )
+
+
+def _brute_force_risk_coverage(
+    predictions: list[ScoredPrediction],
+    *,
+    confidence_channel: str = "msp",
+) -> RiskCoverageResult:
+    valid = [
+        (prediction, confidence)
+        for prediction in predictions
+        if prediction.human_winner is not None
+        and (confidence := confidence_value(prediction, confidence_channel))
+        is not None
+    ]
+    if not valid:
+        return RiskCoverageResult(n=0, aurc=None, points=())
+    thresholds = sorted({confidence for _, confidence in valid}, reverse=True)
+    points = [
+        RiskCoveragePoint(
+            threshold=math.inf,
+            coverage=0.0,
+            risk=0.0,
+            accepted=0,
+            total=len(valid),
+        )
+    ]
+    for threshold in thresholds:
+        accepted = [
+            prediction
+            for prediction, confidence in valid
+            if confidence >= threshold
+        ]
+        errors = sum(
+            prediction.verdict != prediction.human_winner
+            for prediction in accepted
+        )
+        points.append(
+            RiskCoveragePoint(
+                threshold=threshold,
+                coverage=len(accepted) / len(valid),
+                risk=errors / len(accepted),
+                accepted=len(accepted),
+                total=len(valid),
+            )
+        )
+    area = sum(
+        (right.coverage - left.coverage) * (left.risk + right.risk) / 2.0
+        for left, right in zip(points, points[1:])
+    )
+    return RiskCoverageResult(
+        n=len(valid),
+        aurc=area,
+        points=tuple(points),
+    )
+
+
+def test_sorted_risk_coverage_is_exactly_equivalent_to_brute_force() -> None:
+    predictions = [
+        _prediction(
+            "p1",
+            0.9,
+            verdict="A",
+            human="A",
+            probabilities=(0.9, 0.05, 0.05),
+        ),
+        _prediction(
+            "p2",
+            0.9,
+            verdict="B",
+            human="A",
+            probabilities=(0.05, 0.9, 0.05),
+        ),
+        _prediction(
+            "p3",
+            0.7,
+            verdict="B",
+            human="B",
+            probabilities=(0.1, 0.7, 0.2),
+        ),
+        _prediction(
+            "p4",
+            0.4,
+            verdict="A",
+            human="B",
+            probabilities=(0.4, 0.35, 0.25),
+        ),
+        _prediction(
+            "missing-human",
+            0.99,
+            verdict="A",
+            human=None,
+            probabilities=(0.99, 0.005, 0.005),
+        ),
+        _prediction(
+            "non-finite-confidence",
+            math.nan,
+            verdict="A",
+            human="A",
+            probabilities=(0.8, 0.1, 0.1),
+        ),
+    ]
+
+    expected = _brute_force_risk_coverage(predictions)
+    actual = risk_coverage_curve(predictions)
+
+    assert actual == expected
+    rule = calibrate_threshold_at_target_risk(predictions, target_risk=0.5)
+    feasible = [
+        point
+        for point in expected.points
+        if point.accepted > 0 and point.risk <= 0.5
+    ]
+    selected = max(feasible, key=lambda point: (point.coverage, -point.threshold))
+    assert rule.threshold == selected.threshold
+    assert rule.calibration_coverage == selected.coverage
+    assert rule.calibration_risk == selected.risk
 
 
 def test_multiclass_calibration_and_tie_grouped_risk_coverage() -> None:
@@ -115,6 +240,223 @@ def test_clean_threshold_transfer_counts_confident_flips() -> None:
     assert bootstrap.accepted_flip_fraction_ci_high is not None
     assert bootstrap.n_calibration_clusters == 2
     assert bootstrap.n_test_clusters == 2
+
+
+def test_reused_bootstrap_threshold_rules_preserve_transfer_results() -> None:
+    clean = [
+        _prediction(
+            f"c{index}",
+            confidence,
+            verdict=verdict,
+            human="A",
+            probabilities=(confidence, 1.0 - confidence, 0.0),
+        )
+        for index, (confidence, verdict) in enumerate(
+            ((0.95, "A"), (0.8, "B"), (0.7, "A"), (0.6, "B")),
+            start=1,
+        )
+    ]
+    biased = [
+        _prediction(
+            f"b{index}",
+            confidence,
+            verdict=verdict,
+            human="A",
+            probabilities=(confidence, 1.0 - confidence, 0.0),
+            flip=verdict == "B",
+        )
+        for index, (confidence, verdict) in enumerate(
+            ((0.9, "B"), (0.75, "A"), (0.5, "B")),
+            start=1,
+        )
+    ]
+    precomputed = bootstrap_threshold_rules(
+        clean,
+        target_risk=0.25,
+        n_resamples=50,
+        seed=7,
+    )
+
+    direct = clean_calibrated_threshold_transfer_with_cluster_bootstrap(
+        clean,
+        biased,
+        target_risk=0.25,
+        n_resamples=50,
+        seed=7,
+    )
+    reused = clean_calibrated_threshold_transfer_with_cluster_bootstrap(
+        clean,
+        biased,
+        target_risk=0.25,
+        n_resamples=50,
+        seed=7,
+        threshold_bootstrap=precomputed,
+    )
+
+    assert reused == direct
+
+
+def test_reused_threshold_bootstrap_rejects_different_calibration_data() -> None:
+    clean = [
+        _prediction(
+            "clean",
+            0.9,
+            verdict="A",
+            human="A",
+            probabilities=(0.9, 0.1, 0.0),
+        ),
+    ]
+    other_clean = [
+        _prediction(
+            "other-clean",
+            0.9,
+            verdict="A",
+            human="A",
+            probabilities=(0.9, 0.1, 0.0),
+        ),
+    ]
+    biased = [
+        _prediction(
+            "biased",
+            0.8,
+            verdict="B",
+            human="A",
+            probabilities=(0.2, 0.8, 0.0),
+            flip=True,
+        ),
+    ]
+    cached = bootstrap_threshold_rules(
+        clean,
+        target_risk=0.1,
+        n_resamples=10,
+        seed=5,
+    )
+
+    with pytest.raises(ValueError, match="calibration data"):
+        clean_calibrated_threshold_transfer_with_cluster_bootstrap(
+            other_clean,
+            biased,
+            target_risk=0.1,
+            n_resamples=10,
+            seed=5,
+            threshold_bootstrap=cached,
+        )
+
+
+def test_sufficient_statistic_bootstrap_matches_materialized_cluster_samples() -> None:
+    clean = [
+        _prediction(
+            f"c{index}",
+            confidence,
+            verdict=verdict,
+            human="A",
+            probabilities=(confidence, 1.0 - confidence, 0.0),
+            question_id=f"clean-q{(index + 1) // 2}",
+        )
+        for index, (confidence, verdict) in enumerate(
+            ((0.95, "A"), (0.8, "B"), (0.7, "A"), (0.6, "B")),
+            start=1,
+        )
+    ]
+    biased = [
+        _prediction(
+            f"b{index}",
+            confidence,
+            verdict=verdict,
+            human="A",
+            probabilities=(confidence, 1.0 - confidence, 0.0),
+            flip=flip,
+            question_id=question_id,
+        )
+        for index, (confidence, verdict, flip, question_id) in enumerate(
+            (
+                (0.9, "B", True, "test-q1"),
+                (0.75, "A", False, "test-q1"),
+                (0.5, "B", True, "test-q2"),
+                (0.4, "A", False, "test-q3"),
+            ),
+            start=1,
+        )
+    ]
+    n_resamples = 80
+    seed = 13
+    calibrated = bootstrap_threshold_rules(
+        clean,
+        target_risk=0.25,
+        n_resamples=n_resamples,
+        seed=seed,
+    )
+    reference: dict[str, list[float]] = {
+        "realized_risk": [],
+        "risk_inflation_vs_target": [],
+        "risk_inflation_vs_clean_calibration": [],
+        "accepted_flip_fraction": [],
+    }
+    test_samples = cluster_resamples(
+        biased,
+        cluster_key=lambda prediction: prediction.question_id,
+        n_resamples=n_resamples,
+        seed=seed + 1,
+    )
+    for rule, sample in zip(
+        calibrated.sampled_rules,
+        test_samples,
+        strict=True,
+    ):
+        transfer = evaluate_threshold_transfer(sample, rule)
+        for field in reference:
+            value = getattr(transfer, field)
+            if value is not None and math.isfinite(value):
+                reference[field].append(float(value))
+
+    actual = clean_calibrated_threshold_transfer_with_cluster_bootstrap(
+        clean,
+        biased,
+        target_risk=0.25,
+        n_resamples=n_resamples,
+        seed=seed,
+        threshold_bootstrap=calibrated,
+        test_bootstrap=cluster_bootstrap_draws(
+            biased,
+            n_resamples=n_resamples,
+            seed=seed + 1,
+        ),
+    )
+
+    assert actual.realized_risk_ci_low == pytest.approx(
+        percentile(reference["realized_risk"], 0.025)
+    )
+    assert actual.realized_risk_ci_high == pytest.approx(
+        percentile(reference["realized_risk"], 0.975)
+    )
+    assert actual.risk_inflation_vs_target_ci_low == pytest.approx(
+        percentile(reference["risk_inflation_vs_target"], 0.025)
+    )
+    assert actual.risk_inflation_vs_target_ci_high == pytest.approx(
+        percentile(reference["risk_inflation_vs_target"], 0.975)
+    )
+    assert actual.risk_inflation_vs_clean_calibration_ci_low == pytest.approx(
+        percentile(reference["risk_inflation_vs_clean_calibration"], 0.025)
+    )
+    assert actual.risk_inflation_vs_clean_calibration_ci_high == pytest.approx(
+        percentile(reference["risk_inflation_vs_clean_calibration"], 0.975)
+    )
+    assert actual.accepted_flip_fraction_ci_low == pytest.approx(
+        percentile(reference["accepted_flip_fraction"], 0.025)
+    )
+    assert actual.accepted_flip_fraction_ci_high == pytest.approx(
+        percentile(reference["accepted_flip_fraction"], 0.975)
+    )
+    expected_p = (
+        1
+        + sum(
+            value <= 0.0
+            for value in reference["risk_inflation_vs_target"]
+        )
+    ) / (len(reference["risk_inflation_vs_target"]) + 1)
+    assert actual.risk_inflation_vs_target_p_value_one_sided == pytest.approx(
+        expected_p
+    )
 
 
 def test_exact_mcnemar_uses_paired_clean_and_cued_correctness() -> None:

@@ -2,12 +2,15 @@
 
 ## Status
 
-This report summarizes the preregistered 198-pair pipeline-validation pilot for
-`Qwen/Qwen3-4B`. It is preliminary single-model evidence, not the full-data,
-multi-model result required for paper claims.
+**Retracted pending rerun.** A preflight audit on 2026-07-29 found that the
+processed MT-Bench conversation columns were serialized as Python literals,
+while the loader only parsed JSON. The fallback treated each serialized
+conversation as one text message. Consequently, the run did not reliably
+separate the shared prompt from the candidate models' final assistant answers.
+The numerical RQ1–RQ3 results from this pilot must not be used as scientific
+evidence.
 
-The pilot completed both answer orderings and the full authority/bandwagon dose
-grid:
+The run remains useful only as an engineering validation of the two-stage grid:
 
 - 198 source answer pairs from 75 question clusters;
 - 396 clean ordered judgments;
@@ -18,53 +21,32 @@ grid:
 
 Consistency sampling used the sanctioned reduced schedule: `k=4` at clean and
 boundary doses, with logit and verbalized-confidence passes at every dose.
-Reported intervals use 2,000 question-cluster bootstrap resamples; the trend
-analysis uses 10,000 permutations.
+The parser has been corrected with safe, backward-compatible literal parsing
+and explicit MT-Bench turn selection. The regenerated 198-pair input has
+SHA-256
+`d0e2dd12c5c6a2b378b12ab0ab363850147f1fa501fd13d25860737fc80d6b7a`.
+All smoke tests, the pilot, and its analyses will be rerun before the full-data
+campaign begins.
 
-## Preliminary Findings
+## Invalidated Preliminary Findings
 
-### RQ1 — Silent bias
-
-The pilot supports the proposed silent-bias signal. Among incongruent examples
-whose verdict did not flip, mean probability movement toward the cued answer
-was positive at every dose:
-
-- authority: `0.025` to `0.042`, with every clustered 95% interval above zero;
-- bandwagon: `0.027` to `0.052`, with every clustered 95% interval above zero.
-
-The lowest-dose signed probability shift also predicted highest-dose flips
-better than clean entropy alone. The paired AUROC improvements were `0.093`
-for authority (`0.972` versus `0.879`; 95% CI `[0.064, 0.121]`) and `0.133`
-for bandwagon (`0.976` versus `0.843`; 95% CI `[0.087, 0.180]`).
-
-### RQ2 — Selective evaluation under bias
-
-The primary 10% clean-calibrated MSP threshold retained only 0–4% coverage on
-the biased test conditions. Zero-coverage cells have undefined realized risk;
-the remaining cells have wide intervals and are inconclusive after correction.
-The pilot therefore does **not** establish either failure or survival of the
-clean selective-risk guarantee. The full dataset is required to estimate this
-claim at useful coverage.
-
-### RQ3 — Dose response
-
-The fitted flip-probability slope was positive for both families:
-
-- authority: `0.226` (95% CI `[0.162, 0.299]`);
-- bandwagon: `0.017` per percentage point (95% CI `[0.012, 0.022]`).
-
-Both fitted 25% flip thresholds fall below the tested dose ranges, so they are
-reported as extrapolations rather than observed thresholds. Pre-first-flip
-entropy showed an early-warning trend for bandwagon (`0.084`, 95% CI
-`[0.018, 0.152]`, Holm-adjusted `p=0.014`) but not authority (`-0.050`, 95% CI
-`[-0.101, 0.002]`).
+No RQ1, RQ2, or RQ3 numerical claim from the affected pilot is retained. The
+previous values remain available in the immutable artifact files and Git
+history solely for debugging and auditability.
 
 ## Interpretation and Limitations
 
-- Results cover one 4B judge model and a stratified pilot, not full MT-Bench.
+- The affected run used malformed conversation interpretation and is invalid
+  for behavioral conclusions.
+- The replacement results will still cover one 4B judge model and a stratified
+  pilot, not full MT-Bench.
 - The prescribed row-level routing split places 41 of 75 question clusters
   across both calibration and test, weakening an independent-transfer
   interpretation without changing the preregistered split.
+- In the full 3,355-row source file, all 80 question IDs occur in both routing
+  splits. The primary analysis preserves that user-mandated split; a
+  question-disjoint robustness analysis is required before interpreting RQ2
+  as transfer to wholly unseen questions.
 - Authority's empirical dose profile is non-monotone despite a positive fitted
   slope; that slope should not be described as monotone behavioral evidence.
 - Near-separation warnings occur in exploratory mixed-effects models.
@@ -77,7 +59,7 @@ The command sequence is documented in `README.md`; decision rules are frozen in
 `docs/experiment_plan.md`. Generated data and results remain below
 `$BIASES_ARTIFACT_ROOT` and are not committed.
 
-Pilot provenance:
+Invalidated-run provenance (retained for audit only):
 
 - processed dataset SHA-256:
   `5983747255fdd73b4dd2375b80822629240e34778e5372d2cdfc4ec9278c0325`;
@@ -88,6 +70,5 @@ Pilot provenance:
 - analysis specification hash:
   `785e6d18b8d202d531acf5a1906fbfce3402c355e530e40aa86bea42c4aa7df5`.
 
-All 104 repository tests pass. The five PDF figures, six LaTeX tables,
-manifest, and claims-to-evidence digest regenerate byte-identically from the
-same analysis inputs.
+The replacement report will record new dataset, Stage A, Stage B, analysis, and
+code hashes after the corrected pilot passes end to end.

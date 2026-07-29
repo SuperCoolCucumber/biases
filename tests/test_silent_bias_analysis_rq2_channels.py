@@ -11,7 +11,7 @@ from biases.analysis.modeling import (
 )
 from biases.analysis.records import pair_clean_and_cued, record_from_mapping
 from biases.analysis.rq1 import compute_paired_shifts
-from biases.analysis.selective import ScoredPrediction
+from biases.analysis.selective import ScoredPrediction, bootstrap_threshold_rules
 from scripts.analyze_silent_bias import (
     calibration_outputs,
     dose_response_outputs,
@@ -173,6 +173,47 @@ def test_rq2_outputs_split_clean_ties_and_emit_all_confidence_channels() -> None
         for row in primary
     )
     assert all(row.get("p_value_holm") is not None for row in primary)
+
+
+def test_threshold_transfer_reuses_clean_bootstrap_per_analysis_cell() -> None:
+    clean = [
+        _prediction(
+            f"cal-{index}",
+            split="calibration",
+            family="clean",
+            direction="clean",
+            dose=None,
+            variant_id="clean",
+        )
+        for index in range(4)
+    ]
+    biased = [
+        _prediction(
+            f"biased-{dose}-{index}",
+            split="test",
+            family="authority",
+            direction="incongruent",
+            dose=dose,
+            variant_id=f"authority_incongruent_{dose}_ab",
+        )
+        for dose in (1, 4)
+        for index in range(2)
+    ]
+
+    with patch(
+        "scripts.analyze_silent_bias.bootstrap_threshold_rules",
+        wraps=bootstrap_threshold_rules,
+    ) as bootstrap_builder:
+        threshold_transfer_outputs(
+            clean,
+            biased,
+            target_risks=(0.10,),
+            aggregation="single_ordering",
+            n_resamples=10,
+            seed=42,
+        )
+
+    assert bootstrap_builder.call_count == 3
 
 
 def _flat_row(

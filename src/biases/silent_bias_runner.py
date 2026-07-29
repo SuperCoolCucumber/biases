@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -101,21 +102,46 @@ def _stage_paths(output_dir: Path, stage: Literal["stage_a", "stage_b"]) -> Runn
     )
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _read_jsonl(
+    path: Path,
+    *,
+    recover_incomplete_tail: bool = False,
+) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     rows: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
+    file_size = path.stat().st_size
+    truncate_offset: int | None = None
+    with path.open("rb") as handle:
+        line_number = 0
+        while True:
+            line_offset = handle.tell()
+            line = handle.readline()
+            if not line:
+                break
+            line_number += 1
             if not line.strip():
                 continue
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError as exc:
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                is_incomplete_tail = (
+                    recover_incomplete_tail
+                    and handle.tell() == file_size
+                    and not line.endswith(b"\n")
+                )
+                if is_incomplete_tail:
+                    truncate_offset = line_offset
+                    break
                 raise ValueError(f"Invalid JSONL at {path}:{line_number}") from exc
             if not isinstance(row, dict):
                 raise TypeError(f"Expected an object at {path}:{line_number}")
             rows.append(row)
+    if truncate_offset is not None:
+        with path.open("r+b") as handle:
+            handle.truncate(truncate_offset)
+            handle.flush()
+            os.fsync(handle.fileno())
     return rows
 
 
@@ -124,6 +150,26 @@ def _atomic_write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     temporary = path.with_suffix(f"{path.suffix}.tmp")
     write_jsonl(temporary, rows)
     temporary.replace(path)
+
+
+def _append_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    if not rows:
+        return
+    ensure_parent(path)
+    payload = "".join(
+        f"{json.dumps(row, ensure_ascii=True)}\n" for row in rows
+    ).encode("utf-8")
+    with path.open("ab+") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() > 0:
+            handle.seek(-1, os.SEEK_END)
+            needs_separator = handle.read(1) != b"\n"
+            handle.seek(0, os.SEEK_END)
+            if needs_separator:
+                handle.write(b"\n")
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
@@ -150,6 +196,7 @@ def _record_sort_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
 def _validate_resume_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
+    judge: JudgeBackend,
     items: Sequence[EvaluationItem],
     stage: Literal["stage_a", "stage_b"],
     input_file_hash: str,
@@ -188,6 +235,38 @@ def _validate_resume_rows(
             consistency_runs=consistency_runs,
             consistency_schedule=consistency_schedule,
         )
+        expected_methods = ["logit"]
+        if include_verbalized_confidence:
+            expected_methods.append("verbalized_confidence")
+        if expected_consistency > 0:
+            expected_methods.extend(("consistency", "consistency_entropy"))
+        expected_spec = ExperimentSpec(
+            dataset_name=dataset_name,
+            dataset_split=dataset_split,
+            model_name=model_name,
+            model_revision=model_revision,
+            backend_name="vllm",
+            bias_name=str(item.planned.condition.bias_type),
+            output_mode=OutputMode.CHOICE_ONLY,
+            uncertainty_methods=expected_methods,
+            consistency_runs=expected_consistency,
+            temperature=sampling_temperature,
+            consistency_schedule=consistency_schedule,
+        )
+        expected_choice_prompt = _prompt_package(
+            judge=judge,
+            item=item,
+            output_mode=OutputMode.CHOICE_ONLY,
+        )
+        expected_confidence_prompt = (
+            _prompt_package(
+                judge=judge,
+                item=item,
+                output_mode=OutputMode.CHOICE_WITH_CONFIDENCE,
+            )
+            if include_verbalized_confidence
+            else None
+        )
         methods = {str(value) for value in spec.get("uncertainty_methods", ())}
         checks = {
             "input_file_hash": row.get("input_file_hash") == input_file_hash,
@@ -196,6 +275,31 @@ def _validate_resume_rows(
             "dataset_name": spec.get("dataset_name") == dataset_name,
             "dataset_split": spec.get("dataset_split") == dataset_split,
             "stage": metadata.get("stage") == stage,
+            "prompt_hash": row.get("prompt_hash") == expected_choice_prompt.prompt_hash,
+            "verbalized_prompt_hash": (
+                metadata.get("verbalized_prompt_hash")
+                == (
+                    expected_confidence_prompt.prompt_hash
+                    if expected_confidence_prompt is not None
+                    else None
+                )
+            ),
+            "spec_hash": (
+                row.get("spec_hash")
+                == stable_hash(expected_spec.model_dump(mode="json"))
+            ),
+            "source_row_index": (
+                metadata.get("source_row_index")
+                == item.example.metadata.get("source_row_index")
+            ),
+            "selected_turn": (
+                metadata.get("selected_turn")
+                == item.example.metadata.get("selected_turn")
+            ),
+            "conversation_extraction_mode": (
+                metadata.get("conversation_extraction_mode")
+                == item.example.metadata.get("conversation_extraction_mode")
+            ),
             "consistency_runs": spec.get("consistency_runs") == expected_consistency,
             "consistency_schedule": (
                 spec.get("consistency_schedule") == consistency_schedule
@@ -494,12 +598,13 @@ def _evaluate_new_items(
             sampling_temperature=sampling_temperature,
             include_verbalized_confidence=include_verbalized_confidence,
         )
-        accumulated_rows.extend(
+        batch_rows = [
             record.model_dump(mode="json") for record in records
-        )
-        accumulated_rows.sort(key=_record_sort_key)
+        ]
         if checkpoint_path is not None:
-            _atomic_write_jsonl(checkpoint_path, accumulated_rows)
+            _append_jsonl(checkpoint_path, batch_rows)
+        accumulated_rows.extend(batch_rows)
+    accumulated_rows.sort(key=_record_sort_key)
     return accumulated_rows
 
 
@@ -520,6 +625,11 @@ def _clean_summary_row(record: RunRecord) -> dict[str, Any]:
         "pair_id": record.metadata.get("pair_id"),
         "source_row_index": record.metadata.get("source_row_index"),
         "routing_split": record.metadata.get("routing_split"),
+        "turn": record.metadata.get("turn"),
+        "selected_turn": record.metadata.get("selected_turn"),
+        "conversation_extraction_mode": record.metadata.get(
+            "conversation_extraction_mode"
+        ),
         "human_winner": record.metadata.get("human_winner"),
         "clean_verdict": record.verdict,
         "verdict": record.verdict,
@@ -546,6 +656,11 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
         "pair_id": record.metadata.get("pair_id"),
         "source_row_index": record.metadata.get("source_row_index"),
         "routing_split": record.metadata.get("routing_split"),
+        "turn": record.metadata.get("turn"),
+        "selected_turn": record.metadata.get("selected_turn"),
+        "conversation_extraction_mode": record.metadata.get(
+            "conversation_extraction_mode"
+        ),
         "human_winner": human_winner,
         "clean_verdict": clean_verdict,
         "verdict": record.verdict,
@@ -566,7 +681,8 @@ def _materialize_derived_outputs(
     paths: RunnerPaths,
     stage: Literal["stage_a", "stage_b"],
 ) -> list[RunRecord]:
-    records = [RunRecord.model_validate(row) for row in raw_rows]
+    ordered_raw_rows = sorted(raw_rows, key=_record_sort_key)
+    records = [RunRecord.model_validate(row) for row in ordered_raw_rows]
     uncertainty_rows = [_record_to_uncertainty_row(record) for record in records]
     pair_rows = [
         _clean_summary_row(record)
@@ -574,7 +690,7 @@ def _materialize_derived_outputs(
         else _cued_summary_row(record)
         for record in records
     ]
-    _atomic_write_jsonl(paths.raw_records, raw_rows)
+    _atomic_write_jsonl(paths.raw_records, ordered_raw_rows)
     _atomic_write_jsonl(paths.uncertainty_scores, uncertainty_rows)
     _atomic_write_jsonl(paths.pair_summary, pair_rows)
     return records
@@ -661,9 +777,14 @@ def run_silent_bias_clean(
             f"Judge resolved to {active_judge.model_name!r}, expected "
             f"{canonical_model_name!r}"
         )
-    existing_rows = _read_jsonl(paths.raw_records) if resume else []
+    existing_rows = (
+        _read_jsonl(paths.raw_records, recover_incomplete_tail=True)
+        if resume
+        else []
+    )
     _validate_resume_rows(
         existing_rows,
+        judge=active_judge,
         items=items,
         stage="stage_a",
         input_file_hash=input_hash,
@@ -808,9 +929,14 @@ def run_silent_bias_cued(
             f"Judge resolved to {active_judge.model_name!r}, expected "
             f"{canonical_model_name!r}"
         )
-    existing_rows = _read_jsonl(paths.raw_records) if resume else []
+    existing_rows = (
+        _read_jsonl(paths.raw_records, recover_incomplete_tail=True)
+        if resume
+        else []
+    )
     _validate_resume_rows(
         existing_rows,
+        judge=active_judge,
         items=items,
         stage="stage_b",
         input_file_hash=input_hash,

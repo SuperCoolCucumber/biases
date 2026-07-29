@@ -145,6 +145,7 @@ def test_fake_backend_runs_both_stages_and_resume_is_idempotent(
     } == {expected_revision}
     assert {row["ordering"] for row in clean_rows} == {"ab", "ba"}
     assert {row["question_id"] for row in clean_rows} == {"q1", "q2"}
+    assert {row["source_row_index"] for row in clean_rows} == {0, 1}
     assert all(row["pair_key"] for row in cued_rows)
     assert all(row["clean_record_id"] for row in cued_rows)
     assert {
@@ -223,6 +224,46 @@ def test_resume_rejects_incompatible_existing_rows(tmp_path: Path) -> None:
         )
 
 
+def test_resume_rejects_stale_prompt_and_extraction_provenance(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    judge = _FakeJudge()
+
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        judge=judge,
+    )
+    raw_path = Path(summary["raw_records_path"])
+    rows = _read_jsonl(raw_path)
+    rows[0]["prompt_hash"] = "stale"
+    rows[0]["spec_hash"] = "stale"
+    rows[0]["metadata"]["conversation_extraction_mode"] = "stale"
+    raw_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="prompt_hash.*spec_hash.*conversation_extraction_mode",
+    ):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            judge=judge,
+        )
+
+
 def test_resume_rejects_a_different_model_revision(tmp_path: Path) -> None:
     csv_path = tmp_path / "pilot.csv"
     output_dir = tmp_path / "outputs"
@@ -287,6 +328,113 @@ def test_runner_checkpoints_completed_batches_for_resume(tmp_path: Path) -> None
     )
     assert resumed["records_written"] == 4
     assert len(_read_jsonl(checkpoint_path)) == 4
+
+
+def test_runner_recovers_only_an_incomplete_checkpoint_tail(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            batch_size=2,
+            judge=_InterruptingJudge(),
+        )
+
+    checkpoint_path = output_dir / "silent_bias_stage_a_run_records.jsonl"
+    checkpoint_rows = _read_jsonl(checkpoint_path)
+    with checkpoint_path.open("ab") as handle:
+        handle.write(b'{"record_id": "incomplete')
+
+    resumed = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        batch_size=2,
+        judge=_FakeJudge(),
+    )
+
+    resumed_rows = _read_jsonl(checkpoint_path)
+    assert resumed["records_written"] == 4
+    assert {row["record_id"] for row in checkpoint_rows}.issubset(
+        {row["record_id"] for row in resumed_rows}
+    )
+    assert len(resumed_rows) == 4
+
+    with checkpoint_path.open("ab") as handle:
+        handle.write(b"not-json\n")
+    with pytest.raises(ValueError, match="Invalid JSONL"):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            batch_size=2,
+            judge=_FakeJudge(),
+        )
+
+
+def test_final_materialization_is_sorted_and_byte_deterministic(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        batch_size=2,
+        judge=_FakeJudge(),
+    )
+    raw_path = Path(summary["raw_records_path"])
+    uncertainty_path = Path(summary["uncertainty_scores_path"])
+    pair_summary_path = Path(summary["pair_summary_path"])
+    expected = {
+        raw_path: raw_path.read_bytes(),
+        uncertainty_path: uncertainty_path.read_bytes(),
+        pair_summary_path: pair_summary_path.read_bytes(),
+    }
+
+    raw_lines = raw_path.read_bytes().splitlines(keepends=True)
+    raw_path.write_bytes(b"".join(reversed(raw_lines)))
+    assert raw_path.read_bytes() != expected[raw_path]
+
+    resumed = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        batch_size=2,
+        judge=_FakeJudge(),
+    )
+
+    assert resumed["records_written"] == 4
+    assert {path: path.read_bytes() for path in expected} == expected
+    rows = _read_jsonl(raw_path)
+    sort_keys = [
+        (
+            str(row["pair_key"]),
+            str(row["condition"]["variant_id"]),
+            str(row["record_id"]),
+        )
+        for row in rows
+    ]
+    assert sort_keys == sorted(sort_keys)
 
 
 def test_pair_key_prevents_repeated_judgment_record_id_collisions(

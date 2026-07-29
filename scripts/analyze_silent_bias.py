@@ -42,8 +42,11 @@ from biases.analysis.rq1 import (
 )
 from biases.analysis.selective import (
     CONFIDENCE_CHANNELS,
+    ClusterBootstrapDraws,
     ScoredPrediction,
+    bootstrap_threshold_rules,
     calibration_summary,
+    cluster_bootstrap_draws,
     clean_calibrated_threshold_transfer_with_cluster_bootstrap,
     confidence_value,
     paired_correctness_mcnemar,
@@ -370,6 +373,28 @@ def threshold_transfer_outputs(
     confidence_channels: Sequence[str] = CONFIDENCE_CHANNELS,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    test_bootstrap_cache: dict[
+        tuple[tuple[str, ...], int, int],
+        ClusterBootstrapDraws,
+    ] = {}
+
+    def reusable_test_bootstrap(
+        predictions: Sequence[ScoredPrediction],
+    ) -> ClusterBootstrapDraws:
+        cluster_keys = tuple(
+            sorted({item.question_id for item in predictions}, key=repr)
+        )
+        cache_key = (cluster_keys, n_resamples, seed + 1)
+        cached = test_bootstrap_cache.get(cache_key)
+        if cached is None:
+            cached = cluster_bootstrap_draws(
+                predictions,
+                n_resamples=n_resamples,
+                seed=seed + 1,
+            )
+            test_bootstrap_cache[cache_key] = cached
+        return cached
+
     clean_by_model = _group(
         clean_predictions,
         lambda item: (item.model_name, item.ordering),
@@ -391,6 +416,13 @@ def threshold_transfer_outputs(
             if not calibration_available:
                 continue
             for target_risk in target_risks:
+                threshold_bootstrap = bootstrap_threshold_rules(
+                    calibration,
+                    target_risk=target_risk,
+                    confidence_channel=confidence_channel,
+                    n_resamples=n_resamples,
+                    seed=seed,
+                )
                 clean_channel_available = any(
                     confidence_value(item, confidence_channel) is not None
                     and item.human_winner is not None
@@ -404,6 +436,8 @@ def threshold_transfer_outputs(
                         confidence_channel=confidence_channel,
                         n_resamples=n_resamples,
                         seed=seed,
+                        threshold_bootstrap=threshold_bootstrap,
+                        test_bootstrap=reusable_test_bootstrap(clean_test),
                     )
                     rows.append(
                         {
@@ -455,6 +489,8 @@ def threshold_transfer_outputs(
                         confidence_channel=confidence_channel,
                         n_resamples=n_resamples,
                         seed=seed,
+                        threshold_bootstrap=threshold_bootstrap,
+                        test_bootstrap=reusable_test_bootstrap(biased_group),
                     )
                     rows.append(
                         {

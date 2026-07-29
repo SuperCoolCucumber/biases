@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import csv
 import json
 import math
@@ -57,6 +58,15 @@ class PositionPair:
     swapped: JudgeExample
 
 
+@dataclass(frozen=True, slots=True)
+class ConversationExtraction:
+    prompt_messages: list[dict[str, str]]
+    response_a: str
+    response_b: str
+    mode: str
+    selected_turn: int | None
+
+
 def _canonicalize(name: str) -> str:
     return "".join(char.lower() for char in name if char.isalnum())
 
@@ -104,7 +114,10 @@ def _parse_conversation(raw_text: str) -> list[dict[str, str]]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        parsed = None
+        try:
+            parsed = ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            parsed = None
 
     if isinstance(parsed, dict):
         for key in ("messages", "conversation", "turns"):
@@ -171,6 +184,106 @@ def _extract_final_response(conversation: list[dict[str, str]]) -> str:
     if conversation:
         return str(conversation[-1].get("content", "")).strip()
     return ""
+
+
+def _role_contents(
+    conversation: list[dict[str, str]],
+    role: str,
+) -> list[str]:
+    return [
+        str(message.get("content", "")).strip()
+        for message in conversation
+        if str(message.get("role", "")).strip().lower() == role
+    ]
+
+
+def _render_two_turn_candidate(first: str, second: str) -> str:
+    return (
+        f"Turn 1 assistant response (context):\n{first}\n\n"
+        f"Turn 2 assistant response (evaluate this response):\n{second}"
+    )
+
+
+def _extract_conversation_pair(
+    conversation_a: list[dict[str, str]],
+    conversation_b: list[dict[str, str]],
+    *,
+    turn: str,
+) -> ConversationExtraction:
+    """Select the MT-Bench target turn without discarding its prior context."""
+
+    selected_turn = int(turn) if turn in {"1", "2"} else None
+    if selected_turn is not None:
+        users_a = _role_contents(conversation_a, "user")
+        users_b = _role_contents(conversation_b, "user")
+        assistants_a = _role_contents(conversation_a, "assistant")
+        assistants_b = _role_contents(conversation_b, "assistant")
+        enough_messages = all(
+            len(messages) >= selected_turn
+            for messages in (users_a, users_b, assistants_a, assistants_b)
+        )
+        shared_questions = (
+            enough_messages
+            and users_a[:selected_turn] == users_b[:selected_turn]
+            and all(users_a[:selected_turn])
+        )
+        if shared_questions and selected_turn == 1:
+            return ConversationExtraction(
+                prompt_messages=[
+                    {"role": "user", "content": users_a[0]},
+                ],
+                response_a=assistants_a[0],
+                response_b=assistants_b[0],
+                mode="mtbench_turn_1",
+                selected_turn=1,
+            )
+        if shared_questions and selected_turn == 2:
+            response_a = (
+                _render_two_turn_candidate(
+                    assistants_a[0],
+                    assistants_a[1],
+                )
+                if all(assistants_a[:2])
+                else ""
+            )
+            response_b = (
+                _render_two_turn_candidate(
+                    assistants_b[0],
+                    assistants_b[1],
+                )
+                if all(assistants_b[:2])
+                else ""
+            )
+            return ConversationExtraction(
+                prompt_messages=[
+                    {
+                        "role": "user",
+                        "content": f"Turn 1 user question (context):\n{users_a[0]}",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Turn 2 user question (evaluate the response to this "
+                            f"question):\n{users_a[1]}"
+                        ),
+                    },
+                ],
+                response_a=response_a,
+                response_b=response_b,
+                mode="mtbench_turn_2",
+                selected_turn=2,
+            )
+
+    prompt_messages = _shared_prefix_messages(conversation_a, conversation_b)
+    if not prompt_messages and conversation_a:
+        prompt_messages = conversation_a[:-1] or conversation_a
+    return ConversationExtraction(
+        prompt_messages=prompt_messages,
+        response_a=_extract_final_response(conversation_a),
+        response_b=_extract_final_response(conversation_b),
+        mode="legacy_final_response",
+        selected_turn=selected_turn,
+    )
 
 
 def _normalize_winner(raw_winner: str) -> VerdictLabel | None:
@@ -327,14 +440,21 @@ def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[Positi
                 prompt_messages = _parse_prompt_messages(row[prompt_column])
                 response_a = row[response_a_column].strip()
                 response_b = row[response_b_column].strip()
+                extraction_mode = "flat_prompt_responses"
+                selected_turn = int(turn_value) if turn_value in {"1", "2"} else None
             else:
                 conversation_a = _parse_conversation(row[conversation_a_column or ""])
                 conversation_b = _parse_conversation(row[conversation_b_column or ""])
-                prompt_messages = _shared_prefix_messages(conversation_a, conversation_b)
-                if not prompt_messages and conversation_a:
-                    prompt_messages = conversation_a[:-1] or conversation_a
-                response_a = _extract_final_response(conversation_a)
-                response_b = _extract_final_response(conversation_b)
+                extraction = _extract_conversation_pair(
+                    conversation_a,
+                    conversation_b,
+                    turn=turn_value,
+                )
+                prompt_messages = extraction.prompt_messages
+                response_a = extraction.response_a
+                response_b = extraction.response_b
+                extraction_mode = extraction.mode
+                selected_turn = extraction.selected_turn
 
             human_winner = _normalize_winner(row[winner_column])
             if human_winner is None or not response_a or not response_b:
@@ -354,6 +474,8 @@ def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[Positi
                 "source_csv": str(csv_path),
                 "source_row_index": index,
                 "turn": turn_value or None,
+                "selected_turn": selected_turn,
+                "conversation_extraction_mode": extraction_mode,
                 "routing_split": routing_split,
             }
             original = JudgeExample(
@@ -829,7 +951,13 @@ def _build_run_record(
         input_file_hash=input_file_hash,
         metadata={
             "pair_id": example.metadata.get("pair_id"),
+            "source_row_index": example.metadata.get("source_row_index"),
             "routing_split": example.metadata.get("routing_split"),
+            "turn": example.metadata.get("turn"),
+            "selected_turn": example.metadata.get("selected_turn"),
+            "conversation_extraction_mode": example.metadata.get(
+                "conversation_extraction_mode"
+            ),
             "variant_id": condition.variant_id,
             "human_winner": _label_to_str(example.human_winner),
             "ordering": condition.ordering,
@@ -922,6 +1050,7 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         "example_id": record.example_id,
         "question_id": record.question_id,
         "pair_id": record.metadata.get("pair_id"),
+        "source_row_index": record.metadata.get("source_row_index"),
         "pair_identity_key": record.metadata.get("pair_identity_key"),
         "pair_key": record.pair_key,
         "condition_group_id": record.condition_group_id,
@@ -929,6 +1058,11 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         "spec_hash": record.spec_hash,
         "input_file_hash": record.input_file_hash,
         "routing_split": record.metadata.get("routing_split"),
+        "turn": record.metadata.get("turn"),
+        "selected_turn": record.metadata.get("selected_turn"),
+        "conversation_extraction_mode": record.metadata.get(
+            "conversation_extraction_mode"
+        ),
         "variant_id": record.condition.variant_id,
         "ordering": record.condition.ordering,
         "dose": record.condition.dose,

@@ -11,6 +11,27 @@ The source unit is one MT-Bench `(question, answer pair)` row with its existing
 human winner and deterministic `routing_split`. Never recompute or replace that
 split. Every row is judged in both answer orderings, `AB` and `BA`.
 
+### MT-Bench turn normalization
+
+MT-Bench conversation columns are decoded as structured data before prompt
+construction. Canonical JSON is the stored format; the loader also accepts
+legacy Python literal representations via safe literal parsing only. Scalar or
+unparseable values remain plain text and are flagged through extraction
+metadata.
+
+The source `turn` column selects the evaluation target:
+
+- Turn 1 compares the two first-turn assistant answers to the shared first user
+  question.
+- Turn 2 includes both shared user questions and both assistant turns for each
+  candidate, and explicitly asks the judge to focus on the second-turn answer
+  in its preceding conversational context.
+
+The loader records the extraction mode and selected turn in example metadata.
+Pilot validation must inspect golden turn-1 and turn-2 prompts before any full
+run. This normalization fixes source-data interpretation and does not amend the
+scientific conditions or decision rules below.
+
 Stage A runs the clean condition at temperature zero for every
 `(example, ordering, model)`. Stage B is generated deterministically from the
 Stage A pair-summary artifact. For each ordering, Stage B uses the clean verdict

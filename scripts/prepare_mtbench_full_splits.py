@@ -6,6 +6,10 @@ from pathlib import Path
 import pandas as pd
 
 from biases.dataset_splits import assign_routing_split
+from biases.mtbench_io import (
+    MTBENCH_HUMAN_REVISION,
+    serialize_conversation_columns,
+)
 from biases.paths import configure_artifact_environment, data_path
 
 configure_artifact_environment()
@@ -39,11 +43,12 @@ _assign_split = assign_routing_split
 def build_full_dataset_with_splits(
     *,
     dataset_name: str,
+    dataset_revision: str,
     split: str,
     calibration_fraction: float,
     seed: int,
 ) -> pd.DataFrame:
-    dataset = load_dataset(dataset_name)
+    dataset = load_dataset(dataset_name, revision=dataset_revision)
     df = pd.DataFrame(dataset[split])
     missing = [column for column in OUTPUT_COLUMNS if column != "routing_split" and column not in df.columns]
     if missing:
@@ -62,6 +67,10 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--dataset-name", default=DEFAULT_DATASET_NAME)
+    parser.add_argument(
+        "--dataset-revision",
+        default=MTBENCH_HUMAN_REVISION,
+    )
     parser.add_argument("--split", default=DEFAULT_SPLIT)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument(
@@ -83,10 +92,12 @@ def main() -> None:
     args = parse_args()
     df = build_full_dataset_with_splits(
         dataset_name=args.dataset_name,
+        dataset_revision=args.dataset_revision,
         split=args.split,
         calibration_fraction=args.calibration_fraction,
         seed=args.seed,
     )
+    df = serialize_conversation_columns(df)
 
     calibration = df[df["routing_split"] == "calibration"].copy()
     test = df[df["routing_split"] == "test"].copy()
