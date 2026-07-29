@@ -67,6 +67,15 @@ class _FakeJudge:
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
         self.logprobs_mode = CONSTRAINED_LOGPROBS_MODE
+        profile = get_model_profile(model_name)
+        base_ids = {"A": 10, "B": 20, "tie": 30}
+        self.decision_label_token_ids = {
+            label: [
+                base_ids[label] + offset
+                for offset, _ in enumerate(profile.verdict_token_texts[label])
+            ]
+            for label in ("A", "B", "tie")
+        }
 
     def render_messages(self, messages: list[dict[str, str]]) -> str:
         return "\n".join(
@@ -347,6 +356,46 @@ def test_validator_requires_processed_logprobs_mode_in_every_artifact_layer(
     assert report["error_counts_by_code"]["logprobs_mode_mismatch"] == 5
 
 
+def test_validator_rejects_missing_processed_verdict_token_contract(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "qwen"
+    _write_source(csv_path)
+    _run_fixture(csv_path, output_dir, registry_name="qwen3-4b")
+
+    for stage in ("stage_a", "stage_b"):
+        raw_path = output_dir / f"silent_bias_{stage}_run_records.jsonl"
+        flat_path = output_dir / f"silent_bias_{stage}_uncertainty_scores.jsonl"
+        pair_path = output_dir / f"silent_bias_{stage}_pair_summary.jsonl"
+        summary_path = output_dir / f"silent_bias_{stage}_summary.json"
+        raw_rows = _read_jsonl(raw_path)
+        flat_rows = _read_jsonl(flat_path)
+        pair_rows = _read_jsonl(pair_path)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        for row in raw_rows:
+            row["spec"].pop("verdict_token_texts")
+            row["spec"].pop("verdict_token_ids")
+            row["spec_hash"] = stable_hash(row["spec"])
+        for rows in (flat_rows, pair_rows):
+            for row in rows:
+                row.pop("verdict_token_texts")
+                row.pop("verdict_token_ids")
+        summary.pop("verdict_token_texts")
+        summary.pop("verdict_token_ids")
+        _write_jsonl(raw_path, raw_rows)
+        _write_jsonl(flat_path, flat_rows)
+        _write_jsonl(pair_path, pair_rows)
+        summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = _validate(csv_path, output_dir)
+
+    assert report["passed"] is False
+    assert (
+        report["error_counts_by_code"]["verdict_token_contract_mismatch"] >= 2
+    )
+
+
 def test_validator_requires_current_status_and_stage_status_counts(
     tmp_path: Path,
 ) -> None:
@@ -600,7 +649,7 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
     )
     assert (
         destination_rows[0]["metadata"]["judge_output_parser_version"]
-        == "strict_v2"
+        == "strict_v3"
     )
     assert destination_rows[0]["metadata"]["max_num_batched_tokens"] is None
     assert destination_rows[0]["metadata"]["max_num_seqs"] is None
@@ -615,7 +664,7 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
                 destination_dir / f"silent_bias_{stage}_summary.json"
             ).read_text(encoding="utf-8")
         )
-        assert summary["judge_output_parser_version"] == "strict_v2"
+        assert summary["judge_output_parser_version"] == "strict_v3"
         assert summary["logprobs_mode"] == CONSTRAINED_LOGPROBS_MODE
         assert summary["max_num_batched_tokens"] is None
         assert summary["max_num_seqs"] is None

@@ -15,6 +15,12 @@ DEFAULT_VERDICT_TOKEN_TEXTS: Mapping[str, tuple[str, ...]] = {
     "tie": ("T", " T"),
 }
 
+CANONICAL_VERDICT_TOKEN_TEXTS: Mapping[str, tuple[str, ...]] = {
+    "A": ("A",),
+    "B": ("B",),
+    "tie": ("T",),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ModelProfile:
@@ -103,6 +109,7 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         hf_model_name="Qwen/Qwen3-4B",
         family="qwen3",
         revision="1cfa9a7208912126459214e8b04321603b3df60c",
+        verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
         assistant_prefill="<think>\n\n</think>\n\n",
         stop_token_texts=("<|im_end|>",),
     ),
@@ -111,6 +118,7 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         hf_model_name="Qwen/Qwen3-14B",
         family="qwen3",
         revision="40c069824f4251a91eefaf281ebe4c544efd3e18",
+        verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
         assistant_prefill="<think>\n\n</think>\n\n",
         stop_token_texts=("<|im_end|>",),
     ),
@@ -183,6 +191,7 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         hf_model_name="NousResearch/Hermes-3-Llama-3.1-8B",
         family="llama3",
         revision="896ea440e5a9e6070e3d8a2774daf2b481ab425b",
+        verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
         stop_token_texts=("<|im_end|>",),
     ),
     "olmo2-7b-instruct": ModelProfile(
@@ -198,6 +207,7 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         family="olmo3",
         revision="6e5971d9eba42665f5bd5a0fcf047f299ce1dccc",
         chat_template=ChatTemplatePolicy.TOKENIZER,
+        verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
         stop_token_texts=("<|im_end|>", "<|endoftext|>"),
         supports_system_role=True,
         supports_text_prompt_transport=True,

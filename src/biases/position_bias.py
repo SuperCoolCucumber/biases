@@ -43,7 +43,7 @@ except ImportError:  # pragma: no cover
 DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-14B-Instruct"
 DEFAULT_DATA_PATH = data_path("processed", "mtbench_full.csv")
 DEFAULT_MAX_MODEL_LEN = 8192
-JUDGE_OUTPUT_PARSER_VERSION = "strict_v2"
+JUDGE_OUTPUT_PARSER_VERSION = "strict_v3"
 CONSTRAINED_LOGPROBS_MODE = "processed_logprobs"
 VerbalizedParseStatus = Literal[
     "parsed",
@@ -1258,6 +1258,8 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         "condition_group_id": record.condition_group_id,
         "ordering_twin_key": record.ordering_twin_key,
         "spec_hash": record.spec_hash,
+        "verdict_token_texts": record.spec.verdict_token_texts,
+        "verdict_token_ids": record.spec.verdict_token_ids,
         "input_file_hash": record.input_file_hash,
         "routing_split": record.metadata.get("routing_split"),
         "turn": record.metadata.get("turn"),

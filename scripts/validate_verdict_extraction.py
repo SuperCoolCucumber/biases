@@ -465,6 +465,10 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest(),
+        "verdict_token_texts": {
+            label: list(profile.verdict_token_texts[label])
+            for label in ("A", "B", "tie")
+        },
         "resolved_verdict_token_ids": judge.decision_label_token_ids,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
         "logprobs_mode": judge.logprobs_mode,

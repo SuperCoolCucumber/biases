@@ -377,6 +377,14 @@ def _inferred_summary(
             rows,
             path=("spec", "temperature"),
         ),
+        "verdict_token_texts": _uniform_value(
+            rows,
+            path=("spec", "verdict_token_texts"),
+        ),
+        "verdict_token_ids": _uniform_value(
+            rows,
+            path=("spec", "verdict_token_ids"),
+        ),
         "include_verbalized_confidence": any(
             isinstance(value, list) and "verbalized_confidence" in value
             for value in methods
@@ -407,6 +415,14 @@ def _migrated_summary(
     migrated["logprobs_mode"] = logprobs_mode
     migrated["max_num_batched_tokens"] = max_num_batched_tokens
     migrated["max_num_seqs"] = max_num_seqs
+    migrated["verdict_token_texts"] = _uniform_value(
+        raw_rows,
+        path=("spec", "verdict_token_texts"),
+    )
+    migrated["verdict_token_ids"] = _uniform_value(
+        raw_rows,
+        path=("spec", "verdict_token_ids"),
+    )
     migrated["parser_migration_dropped_incomplete_tail"] = (
         dropped_incomplete_tail
     )

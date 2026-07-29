@@ -40,6 +40,15 @@ incomplete positive label support in 48/396 clean rows and 1,321/6,336 cued
 rows, confirming that the stored normalized values are not a complete
 three-label logit pass.
 
+A third pre-pilot audit found a mismatch inside the constrained-token
+contract. The earlier registry allowed both literal and leading-space
+single-token surfaces for each verdict. A model could emit one constrained
+token while the probability path summed multiple surfaces by label, making
+the emitted verdict and aggregated MAP diverge. The first OLMo3 smoke
+encountered this condition and aborted before writing result records. This
+fail-closed behavior is retained; no partial smoke result is treated as
+evidence.
+
 ## Invalidated Preliminary Findings
 
 No RQ1, RQ2, or RQ3 numerical claim from the affected pilot is retained. The
@@ -79,9 +88,15 @@ history solely for debugging and auditability.
   Its failed smoke is retained as an exclusion artifact without weakening the
   99% requirement.
 - OLMo3-7B-Instruct is the public third-family replacement, pinned to revision
-  `6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only canonical
-  string-transport and registered A/B/T token probes passed; its 20-example
-  constrained and native GPU smoke is still pending.
+  `6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only full-grid
+  preflight passed 113,458 prompts, with a maximum of 3,450 prompt tokens plus
+  24 generation tokens, zero string-transport mismatches, and zero context
+  overflows. Its first GPU smoke aborted under the multi-surface mismatch
+  described above and produced no accepted records.
+- The current parser and inference contract is `strict_v3`. All four required
+  models must use exactly the literal `A`, `B`, and `T` tokens and rerun both
+  constrained and native smokes. The native threshold remains 99%. Each
+  `ExperimentSpec` now binds the exact token texts and resolved token IDs.
 
 ## Reproducibility
 

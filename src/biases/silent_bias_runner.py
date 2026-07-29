@@ -63,6 +63,7 @@ UNCERTAINTY_METHODS = (
 class JudgeBackend(Protocol):
     model_name: str
     logprobs_mode: str
+    decision_label_token_ids: Mapping[str, Sequence[int]]
 
     def render_messages(self, messages: list[dict[str, str]]) -> str: ...
 
@@ -198,6 +199,55 @@ def _record_sort_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
     return pair_key, variant_id, str(row.get("record_id"))
 
 
+def _judge_verdict_token_contract(
+    judge: JudgeBackend,
+) -> tuple[dict[str, list[str]], dict[str, list[int]]]:
+    """Return the exact registered surface forms and resolved IDs in stable order."""
+
+    labels = ("A", "B", "tie")
+    profile = get_model_profile(judge.model_name)
+    raw_texts = profile.verdict_token_texts
+    raw_ids = getattr(judge, "decision_label_token_ids", None)
+    if set(raw_texts) != set(labels) or not isinstance(raw_ids, Mapping):
+        raise ValueError(
+            "Silent Bias vLLM judges require a complete A/B/tie verdict-token contract"
+        )
+    if set(raw_ids) != set(labels):
+        raise ValueError(
+            "Silent Bias vLLM judges require resolved token IDs for A, B, and tie"
+        )
+
+    texts: dict[str, list[str]] = {}
+    token_ids: dict[str, list[int]] = {}
+    seen_ids: dict[int, str] = {}
+    for label in labels:
+        label_texts = [str(text) for text in raw_texts[label]]
+        label_ids = [int(token_id) for token_id in raw_ids[label]]
+        if not label_texts or any(not text.strip() for text in label_texts):
+            raise ValueError(f"Verdict label {label!r} has no usable token text")
+        if not label_ids or any(token_id < 0 for token_id in label_ids):
+            raise ValueError(f"Verdict label {label!r} has no usable token ID")
+        if len(label_texts) != len(label_ids):
+            raise ValueError(
+                f"Verdict label {label!r} must have one resolved token ID "
+                "per registered token text"
+            )
+        if len(set(label_texts)) != len(label_texts):
+            raise ValueError(f"Verdict label {label!r} has duplicate token texts")
+        if len(set(label_ids)) != len(label_ids):
+            raise ValueError(f"Verdict label {label!r} has duplicate token IDs")
+        for token_id in label_ids:
+            existing = seen_ids.get(token_id)
+            if existing is not None and existing != label:
+                raise ValueError(
+                    f"Verdict token ID {token_id} maps to both {existing!r} and {label!r}"
+                )
+            seen_ids[token_id] = label
+        texts[label] = label_texts
+        token_ids[label] = label_ids
+    return texts, token_ids
+
+
 def _validate_resume_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
@@ -216,6 +266,7 @@ def _validate_resume_rows(
     max_num_batched_tokens: int | None,
     max_num_seqs: int | None,
 ) -> None:
+    verdict_token_texts, verdict_token_ids = _judge_verdict_token_contract(judge)
     expected = {
         (item.planned.pair_key, item.planned.condition.variant_id): item
         for item in items
@@ -260,6 +311,8 @@ def _validate_resume_rows(
             temperature=sampling_temperature,
             consistency_schedule=consistency_schedule,
             logprobs_mode=CONSTRAINED_LOGPROBS_MODE,
+            verdict_token_texts=verdict_token_texts,
+            verdict_token_ids=verdict_token_ids,
         )
         expected_choice_prompt = _prompt_package(
             judge=judge,
@@ -317,6 +370,12 @@ def _validate_resume_rows(
             ),
             "metadata_logprobs_mode": (
                 metadata.get("logprobs_mode") == CONSTRAINED_LOGPROBS_MODE
+            ),
+            "verdict_token_texts": (
+                spec.get("verdict_token_texts") == verdict_token_texts
+            ),
+            "verdict_token_ids": (
+                spec.get("verdict_token_ids") == verdict_token_ids
             ),
             "verbalized_parse_status": (
                 metadata.get("verbalized_parse_status")
@@ -468,6 +527,7 @@ def _evaluate_batch(
     max_num_batched_tokens: int | None,
     max_num_seqs: int | None,
 ) -> list[RunRecord]:
+    verdict_token_texts, verdict_token_ids = _judge_verdict_token_contract(judge)
     choice_prompts = [
         _prompt_package(judge=judge, item=item, output_mode=OutputMode.CHOICE_ONLY)
         for item in items
@@ -560,6 +620,8 @@ def _evaluate_batch(
             temperature=sampling_temperature,
             consistency_schedule=consistency_schedule,
             logprobs_mode=CONSTRAINED_LOGPROBS_MODE,
+            verdict_token_texts=verdict_token_texts,
+            verdict_token_ids=verdict_token_ids,
         )
         spec_hash = stable_hash(spec.model_dump(mode="json"))
         record = _build_run_record(
@@ -678,6 +740,8 @@ def _clean_summary_row(record: RunRecord) -> dict[str, Any]:
             "judge_output_parser_version"
         ),
         "logprobs_mode": record.spec.logprobs_mode,
+        "verdict_token_texts": record.spec.verdict_token_texts,
+        "verdict_token_ids": record.spec.verdict_token_ids,
         "verbalized_parse_status": record.metadata.get(
             "verbalized_parse_status"
         ),
@@ -718,6 +782,8 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
             "judge_output_parser_version"
         ),
         "logprobs_mode": record.spec.logprobs_mode,
+        "verdict_token_texts": record.spec.verdict_token_texts,
+        "verdict_token_ids": record.spec.verdict_token_ids,
         "verbalized_parse_status": record.metadata.get(
             "verbalized_parse_status"
         ),
@@ -820,6 +886,22 @@ def _require_processed_logprobs(judge: JudgeBackend) -> None:
         )
 
 
+def _require_stage_a_verdict_token_contract(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    judge: JudgeBackend,
+) -> None:
+    expected_texts, expected_ids = _judge_verdict_token_contract(judge)
+    if any(
+        row.get("verdict_token_texts") != expected_texts
+        or row.get("verdict_token_ids") != expected_ids
+        for row in rows
+    ):
+        raise ValueError(
+            "Stage A summary uses an incompatible verdict-token contract"
+        )
+
+
 def run_silent_bias_clean(
     *,
     csv_path: Path,
@@ -885,6 +967,9 @@ def run_silent_bias_clean(
             f"{canonical_model_name!r}"
         )
     _require_processed_logprobs(active_judge)
+    verdict_token_texts, verdict_token_ids = _judge_verdict_token_contract(
+        active_judge
+    )
     existing_rows = (
         _read_jsonl(paths.raw_records, recover_incomplete_tail=True)
         if resume
@@ -945,6 +1030,8 @@ def run_silent_bias_clean(
         "include_verbalized_confidence": include_verbalized_confidence,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
         "logprobs_mode": CONSTRAINED_LOGPROBS_MODE,
+        "verdict_token_texts": verdict_token_texts,
+        "verdict_token_ids": verdict_token_ids,
         "verbalized_parse_status_counts": _verbalized_parse_status_counts(
             records
         ),
@@ -1072,6 +1159,13 @@ def run_silent_bias_cued(
             f"{canonical_model_name!r}"
         )
     _require_processed_logprobs(active_judge)
+    verdict_token_texts, verdict_token_ids = _judge_verdict_token_contract(
+        active_judge
+    )
+    _require_stage_a_verdict_token_contract(
+        model_clean_rows,
+        judge=active_judge,
+    )
     existing_rows = (
         _read_jsonl(paths.raw_records, recover_incomplete_tail=True)
         if resume
@@ -1136,6 +1230,8 @@ def run_silent_bias_cued(
         "include_verbalized_confidence": include_verbalized_confidence,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
         "logprobs_mode": CONSTRAINED_LOGPROBS_MODE,
+        "verdict_token_texts": verdict_token_texts,
+        "verdict_token_ids": verdict_token_ids,
         "verbalized_parse_status_counts": _verbalized_parse_status_counts(
             records
         ),

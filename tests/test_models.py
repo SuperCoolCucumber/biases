@@ -76,6 +76,25 @@ def test_required_paper_model_families_are_registered() -> None:
     assert "mistral-7b-instruct-v0.3" in names
 
 
+@pytest.mark.parametrize(
+    "model_name",
+    (
+        "qwen3-4b",
+        "qwen3-14b",
+        "olmo3-7b-instruct",
+        "hermes3-llama3.1-8b",
+    ),
+)
+def test_required_paper_models_use_canonical_verdict_tokens(
+    model_name: str,
+) -> None:
+    assert get_model_profile(model_name).verdict_token_texts == {
+        "A": ("A",),
+        "B": ("B",),
+        "tie": ("T",),
+    }
+
+
 def test_full_run_models_pin_hugging_face_revisions() -> None:
     model_names = (
         "qwen3-4b",

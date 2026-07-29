@@ -678,6 +678,8 @@ def _expected_flat_projection(record: Mapping[str, Any]) -> dict[str, Any]:
         "condition_group_id": record.get("condition_group_id"),
         "ordering_twin_key": record.get("ordering_twin_key"),
         "spec_hash": record.get("spec_hash"),
+        "verdict_token_texts": spec.get("verdict_token_texts"),
+        "verdict_token_ids": spec.get("verdict_token_ids"),
         "input_file_hash": record.get("input_file_hash"),
         "routing_split": metadata.get("routing_split"),
         "turn": metadata.get("turn"),
@@ -1008,6 +1010,108 @@ def _validate_logprobs_mode_provenance(
                     "logprobs_mode_mismatch",
                     f"{location} logprobs_mode is "
                     f"{row.get('logprobs_mode')!r}; expected {expected!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                    record_id=row.get("record_id"),
+                )
+
+
+def _valid_verdict_token_contract(
+    token_texts: object,
+    token_ids: object,
+) -> bool:
+    labels = {"A", "B", "tie"}
+    if not isinstance(token_texts, Mapping) or set(token_texts) != labels:
+        return False
+    if not isinstance(token_ids, Mapping) or set(token_ids) != labels:
+        return False
+    all_ids: list[int] = []
+    for label in ("A", "B", "tie"):
+        texts = token_texts.get(label)
+        ids = token_ids.get(label)
+        if (
+            not isinstance(texts, list)
+            or not texts
+            or any(not isinstance(text, str) or not text.strip() for text in texts)
+            or len(set(texts)) != len(texts)
+        ):
+            return False
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or any(
+                not isinstance(token_id, int)
+                or isinstance(token_id, bool)
+                or token_id < 0
+                for token_id in ids
+            )
+            or len(set(ids)) != len(ids)
+        ):
+            return False
+        if len(texts) != len(ids):
+            return False
+        all_ids.extend(ids)
+    return len(set(all_ids)) == len(all_ids)
+
+
+def _validate_verdict_token_contract_provenance(
+    raw_rows: Sequence[Mapping[str, Any]],
+    score_rows: Sequence[Mapping[str, Any]],
+    pair_rows: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    *,
+    collector: IssueCollector,
+    artifact_dir: Path,
+    stage: StageName,
+) -> None:
+    expected_texts = summary.get("verdict_token_texts")
+    expected_ids = summary.get("verdict_token_ids")
+    if not _valid_verdict_token_contract(expected_texts, expected_ids):
+        collector.add(
+            "verdict_token_contract_mismatch",
+            "stage summary has no complete, valid A/B/tie verdict-token contract",
+            artifact_dir=artifact_dir,
+            stage=stage,
+        )
+    model_name = summary.get("model_name")
+    if isinstance(model_name, str) and model_name:
+        try:
+            profile = get_model_profile(model_name)
+        except KeyError:
+            profile = None
+        if profile is not None:
+            registry_texts = {
+                label: list(profile.verdict_token_texts[label])
+                for label in ("A", "B", "tie")
+            }
+            if expected_texts != registry_texts:
+                collector.add(
+                    "verdict_token_contract_mismatch",
+                    "stage summary verdict-token texts do not match the current model registry",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                )
+
+    groups = (
+        (
+            "raw spec",
+            (
+                row.get("spec") if isinstance(row.get("spec"), Mapping) else {}
+                for row in raw_rows
+            ),
+        ),
+        ("flat row", iter(score_rows)),
+        ("pair summary", iter(pair_rows)),
+    )
+    for location, rows in groups:
+        for row in rows:
+            if (
+                row.get("verdict_token_texts") != expected_texts
+                or row.get("verdict_token_ids") != expected_ids
+            ):
+                collector.add(
+                    "verdict_token_contract_mismatch",
+                    f"{location} verdict-token contract does not match the stage summary",
                     artifact_dir=artifact_dir,
                     stage=stage,
                     record_id=row.get("record_id"),
@@ -1769,6 +1873,15 @@ def _validate_artifact_dir(
                 artifact_dir=artifact_dir,
                 stage=stage,
             )
+            _validate_verdict_token_contract_provenance(
+                raw_rows[stage],
+                score_rows[stage],
+                pair_rows[stage],
+                stage_summaries[stage],
+                collector=collector,
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
             _validate_verbalized_status_summary(
                 raw_rows[stage],
                 stage_summaries[stage],
@@ -1977,6 +2090,15 @@ def _validate_artifact_dir(
             stage=stage,
         )
         _validate_logprobs_mode_provenance(
+            raw_rows[stage],
+            score_rows[stage],
+            pair_rows[stage],
+            stage_summaries[stage],
+            collector=collector,
+            artifact_dir=artifact_dir,
+            stage=stage,
+        )
+        _validate_verdict_token_contract_provenance(
             raw_rows[stage],
             score_rows[stage],
             pair_rows[stage],

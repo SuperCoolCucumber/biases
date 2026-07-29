@@ -197,6 +197,8 @@ class ExperimentSpec(BaseModel):
     temperature: float
     consistency_schedule: Literal["all", "extremes"] | None = None
     logprobs_mode: Literal["raw_logprobs", "processed_logprobs"] | None = None
+    verdict_token_texts: dict[Literal["A", "B", "tie"], list[str]] | None = None
+    verdict_token_ids: dict[Literal["A", "B", "tie"], list[int]] | None = None
 
 
 class RunRecord(BaseModel):

@@ -214,9 +214,10 @@ RQ2 channel is reported unavailable.
 
 ## 2026-07-29 Parser and Artifact Integrity Gate
 
-Judge-output parsing is versioned as `strict_v2`. Deterministic constrained
-outputs must agree with the aggregated A/B/tie probability MAP, while
-verbalized outputs must contain an unambiguous verdict and confidence in the
+At this stage, judge-output parsing was versioned as `strict_v2`.
+Deterministic constrained outputs had to agree with the aggregated A/B/tie
+probability MAP, while
+verbalized outputs had to contain an unambiguous verdict and confidence in the
 declared two-line format. The verdict-extraction smoke artifact now checks the
 same 20 prompts under constrained decoding and native greedy decoding before a
 model can enter a full run.
@@ -293,5 +294,33 @@ pending; OLMo3 cannot enter the pilot unless it passes the same unchanged
 gates.
 
 Verification after the OLMo3 substitution: 248 tests passed under Python
+3.12, changed Python files compiled, `git diff --check` passed, and the
+campaign wrapper passed `bash -n`.
+
+## 2026-07-30 Exact-Token Contract Correction (`strict_v3`)
+
+The pinned OLMo3 tokenizer-only full-grid preflight passed all 113,458 prompts.
+The maximum prompt length was 3,450 tokens (3,474 including the 24-token
+generation allowance), with zero context overflows and zero canonical
+string-transport mismatches.
+
+The first OLMo3 GPU smoke then aborted before writing result records. Under the
+earlier multi-surface constraint, each verdict could have both a literal and a
+leading-space single-token form. vLLM emitted one constrained token, while the
+probability path aggregated both surfaces by label; the emitted-token verdict
+could therefore disagree with the aggregated MAP. The existing invariant
+caught that disagreement and stopped the smoke. Preserve this fail-closed
+behavior; do not accept the partial attempt as a smoke result.
+
+The current parser and inference contract is `strict_v3`. Qwen3-4B,
+Qwen3-14B, OLMo3-7B-Instruct, and Hermes-3-Llama-3.1-8B must all use exactly
+the literal `A`, `B`, and `T` token surfaces, so constrained emission,
+probability aggregation, and verdict resolution share one token ID per label.
+All four constrained and native smokes must be rerun under this contract; the
+99% native gate is unchanged. `ExperimentSpec` now binds the exact verdict
+token texts and resolved token IDs so resume and artifact validation reject
+contract drift.
+
+Verification after the `strict_v3` correction: 254 tests passed under Python
 3.12, changed Python files compiled, `git diff --check` passed, and the
 campaign wrapper passed `bash -n`.

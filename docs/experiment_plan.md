@@ -93,15 +93,23 @@ dose for every family, direction, and ordering: 18 conditions total. Reducing
 `k` from 8 to 4 is also permitted. Select and record any reduction in
 `ExperimentSpec` before the full run.
 
-### Constrained probability contract
+### Constrained probability and emitted-token contract (`strict_v3`)
 
 The A/B/tie probability channel is the distribution after vLLM applies the
-registered first-token whitelist, not raw full-vocabulary top-k output. Runs
-must use `logprobs_mode=processed_logprobs`, aggregate only the exact
-model-registry token IDs assigned to A, B, and tie, and require every registered
-ID to be present. Decoded-token string matching is not an admissible fallback.
-The mode is recorded in the experiment specification, raw records, flat
-scores, pair summaries, stage summaries, and smoke artifact.
+registered first-token whitelist, not raw full-vocabulary top-k output. The
+current accepted parser and inference contract is `strict_v3`. Every required
+model must use exactly one literal token surface per verdict: `A`, `B`, and
+`T` (tie). Leading-space or other alternate token surfaces are not part of the
+contract. Constrained emission, label-probability aggregation, and verdict
+resolution must use the same three resolved token IDs.
+
+Runs must use `logprobs_mode=processed_logprobs`, require all three registered
+IDs to be present, and fail closed if the emitted-token verdict disagrees with
+the label-probability MAP. Decoded-token string matching is not an admissible
+fallback. The mode is recorded in the experiment specification, raw records,
+flat scores, pair summaries, stage summaries, and smoke artifact.
+`ExperimentSpec` also binds the exact verdict token texts and resolved token
+IDs so a resumed or analyzed run cannot silently change this contract.
 
 Artifacts produced from raw full-vocabulary top-k logprobs cannot be repaired
 from their stored three-label probabilities: missing allowed-token logits are
@@ -139,10 +147,18 @@ examples but failed the same native verdict-token-and-agreement contract on
 with the 99% gate unchanged.
 
 OLMo3-7B-Instruct is the public third-family replacement, pinned to revision
-`6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only checks passed
-canonical string transport and the registered A/B/T single-token probes. Its
-20-example constrained and native GPU smoke is still pending and must pass
-before any pilot starts.
+`6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only full-grid
+preflight passed all 113,458 prompts, with a maximum prompt length of 3,450
+tokens plus 24 generation tokens, zero string-transport mismatches, and zero
+context overflows. Its first GPU smoke aborted before writing result records:
+the earlier multi-surface whitelist allowed the emitted-token verdict to
+diverge from the MAP after alternate token surfaces were aggregated by label.
+This is a successful fail-closed detection, not an admissible result.
+
+The four required models must use the literal `A`/`B`/`T` contract uniformly
+and rerun their 20-example constrained and native smokes under `strict_v3`.
+Earlier smoke passes do not carry forward. The preregistered 99% native gate
+is unchanged, and no pilot starts until all four models pass it.
 
 ## Splits and Analysis Population
 

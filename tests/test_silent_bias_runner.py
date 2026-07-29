@@ -23,6 +23,11 @@ from biases.silent_bias_runner import (
 class _FakeJudge:
     model_name = "Qwen/Qwen3-4B"
     logprobs_mode = CONSTRAINED_LOGPROBS_MODE
+    decision_label_token_ids = {
+        "A": [10],
+        "B": [20],
+        "tie": [30],
+    }
 
     def render_messages(self, messages: list[dict[str, str]]) -> str:
         return "\n".join(
@@ -284,6 +289,30 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
     assert {
         row["logprobs_mode"] for row in tuned_pair_rows
     } == {CONSTRAINED_LOGPROBS_MODE}
+    expected_token_texts = {
+        label: list(texts)
+        for label, texts in get_model_profile("qwen3-4b").verdict_token_texts.items()
+    }
+    expected_token_ids = _FakeJudge.decision_label_token_ids
+    assert tuned_summary["verdict_token_texts"] == expected_token_texts
+    assert tuned_summary["verdict_token_ids"] == expected_token_ids
+    assert {
+        json.dumps(row["spec"]["verdict_token_texts"], sort_keys=True)
+        for row in tuned_rows
+    } == {json.dumps(expected_token_texts, sort_keys=True)}
+    assert {
+        json.dumps(row["spec"]["verdict_token_ids"], sort_keys=True)
+        for row in tuned_rows
+    } == {json.dumps(expected_token_ids, sort_keys=True)}
+    for rows in (tuned_flat_rows, tuned_pair_rows):
+        assert {
+            json.dumps(row["verdict_token_texts"], sort_keys=True)
+            for row in rows
+        } == {json.dumps(expected_token_texts, sort_keys=True)}
+        assert {
+            json.dumps(row["verdict_token_ids"], sort_keys=True)
+            for row in rows
+        } == {json.dumps(expected_token_ids, sort_keys=True)}
     assert {
         row["verbalized_parse_status"] for row in tuned_flat_rows
     } == {"not_requested"}
@@ -620,6 +649,40 @@ def test_runner_and_resume_require_processed_logprobs_mode(
             consistency_runs=0,
             include_verbalized_confidence=False,
             judge=_FakeJudge(),
+        )
+
+
+def test_resume_rejects_changed_verdict_token_contract(tmp_path: Path) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    judge = _FakeJudge()
+
+    run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        judge=judge,
+    )
+    changed = _FakeJudge()
+    changed.decision_label_token_ids = {
+        **judge.decision_label_token_ids,
+        "tie": [31],
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="spec_hash.*verdict_token_ids",
+    ):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            judge=changed,
         )
 
 
