@@ -160,6 +160,16 @@ and rerun their 20-example constrained and native smokes under `strict_v3`.
 Earlier smoke passes do not carry forward. The preregistered 99% native gate
 is unchanged, and no pilot starts until all four models pass it.
 
+The `strict_v3` reruns completed on 2026-07-30. Each of Qwen3-4B, Qwen3-14B,
+OLMo3-7B-Instruct, and Hermes3-Llama3.1-8B passed 20/20 constrained examples
+with valid three-label probabilities and MAP-aligned verdicts, and 20/20
+native examples satisfied the first-token-and-verdict-agreement contract.
+All artifacts declare `processed_logprobs`, `strict_v3`, and the literal
+`A`/`B`/`T` token mapping. This clears only the model smoke prerequisite; the
+198-pair pilot, artifact validation, analyses, and all RQ findings remain
+pending. The per-model artifact paths and SHA-256 ledger are recorded in
+`docs/codex_handoff.md`.
+
 ## Splits and Analysis Population
 
 - `calibration`: select confidence thresholds only.

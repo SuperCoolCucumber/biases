@@ -25,8 +25,9 @@ The parser has been corrected with safe, backward-compatible literal parsing
 and explicit MT-Bench turn selection. The regenerated 198-pair input has
 SHA-256
 `d0e2dd12c5c6a2b378b12ab0ab363850147f1fa501fd13d25860737fc80d6b7a`.
-All smoke tests, the pilot, and its analyses will be rerun before the full-data
-campaign begins.
+All four required model smokes have now been rerun under `strict_v3`. The
+pilot and its analyses still must be rerun before the full-data campaign
+begins.
 
 A second inference audit also found that vLLM 0.19.1 defaults to returning
 full-vocabulary `raw_logprobs` before applying `allowed_token_ids`. The first
@@ -94,9 +95,16 @@ history solely for debugging and auditability.
   overflows. Its first GPU smoke aborted under the multi-surface mismatch
   described above and produced no accepted records.
 - The current parser and inference contract is `strict_v3`. All four required
-  models must use exactly the literal `A`, `B`, and `T` tokens and rerun both
-  constrained and native smokes. The native threshold remains 99%. Each
-  `ExperimentSpec` now binds the exact token texts and resolved token IDs.
+  models use exactly the literal `A`, `B`, and `T` tokens. Each model passed
+  20/20 constrained examples with valid probabilities and MAP alignment, and
+  20/20 native examples passed the first-token-and-verdict-agreement contract.
+  The native threshold remains 99%. Each `ExperimentSpec` binds the exact
+  token texts and resolved token IDs. The full evidence paths and SHA-256
+  values are recorded in `docs/codex_handoff.md`.
+- Passing the four smoke gates establishes only that the judge interfaces meet
+  the preregistered extraction contract. The corrected 198-pair pilot,
+  cross-model artifact validation, RQ1–RQ3 analyses, and all numerical findings
+  remain pending.
 
 ## Reproducibility
 

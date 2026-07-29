@@ -289,9 +289,9 @@ OLMo3-7B-Instruct, and Hermes-3-Llama-3.1-8B, spanning Qwen3, OLMo3, and
 Llama 3.1 families. `allenai/Olmo-3-7B-Instruct` is pinned to revision
 `6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only validation
 passed canonical chat-template string transport and the registered A/B/T
-single-token probes. The 20-example constrained and native GPU smoke remains
-pending; OLMo3 cannot enter the pilot unless it passes the same unchanged
-gates.
+single-token probes. At this point, the 20-example constrained and native GPU
+smoke remained pending; OLMo3 could not enter the pilot unless it passed the
+same unchanged gates.
 
 Verification after the OLMo3 substitution: 248 tests passed under Python
 3.12, changed Python files compiled, `git diff --check` passed, and the
@@ -324,3 +324,38 @@ contract drift.
 Verification after the `strict_v3` correction: 254 tests passed under Python
 3.12, changed Python files compiled, `git diff --check` passed, and the
 campaign wrapper passed `bash -n`.
+
+## 2026-07-30 `strict_v3` Smoke Gate Completion
+
+All four required judges subsequently passed the aggregate smoke gate. For
+each model, all 20 constrained outputs were parseable, had valid three-label
+probabilities, and agreed with the probability MAP; all 20 unconstrained
+native outputs began with a registered verdict token and agreed with the
+constrained verdict. Every artifact records `strict_v3`,
+`processed_logprobs`, literal token texts `A`/`B`/`T`, resolved token IDs
+32/33/51, and an empty issue list. Native output format was `direct_label` on
+20/20 examples for every model.
+
+Evidence paths are repository-relative; the SHA-256 values hash the complete
+JSON artifacts:
+
+- Qwen3-4B:
+  `artifacts/recovered_strict_v3_smokes_d0f6c08/outputs/validation/silent_bias_full/qwen3-4b.json`;
+  SHA-256
+  `99039e54ef7bf8f8199b116e7772125e88b8c7c9f45d02a3084610882331af68`.
+- Qwen3-14B:
+  `artifacts/recovered_strict_v3_smokes_d0f6c08/outputs/validation/silent_bias_full/qwen3-14b.json`;
+  SHA-256
+  `9f39fee007bd79ac640dc4759791720a977886b0e19d03767488f8bb241070e2`.
+- OLMo3-7B-Instruct:
+  `artifacts/recovered_strict_v3_smokes_d0f6c08/outputs/validation/silent_bias_full/olmo3-7b-instruct.json`;
+  SHA-256
+  `d7d754d98cf764a358f9b2ca681f35a04e7205b4bc10a70a05d06a4e3e959a71`.
+- Hermes3-Llama3.1-8B:
+  `artifacts/recovered_strict_v3_smokes_d0f6c08/outputs/validation/silent_bias_full/hermes3-llama3_1-8b.json`;
+  SHA-256
+  `62d5bc611072565e2f4b8021dea96b534a90db625b6bb63ba497a04fbfce2190`.
+
+The smoke gate is complete without changing the preregistered 99% threshold.
+This does not validate the 198-pair pilot or any RQ result: pilot inference,
+cross-model artifact validation, analysis, and paper assets remain pending.
