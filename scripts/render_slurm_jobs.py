@@ -79,6 +79,13 @@ MODEL_SPECS = {
         "128G",
         1,
     ),
+    "phi4_14b": ModelSpec(
+        "phi4_14b",
+        "microsoft/phi-4",
+        1,
+        "160G",
+        1,
+    ),
 }
 
 

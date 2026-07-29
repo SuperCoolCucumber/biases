@@ -249,13 +249,35 @@ New inference is fail-closed:
 Mistral-7B-Instruct-v0.3 is deferred because its tokenizer does not validate
 the runner's string render-and-reencode prompt transport. The registry now
 fails closed for that model until a token-ID prompt adapter exists.
-The required replacement matrix is Qwen3-4B, Qwen3-14B,
+The initial replacement candidate matrix was Qwen3-4B, Qwen3-14B,
 OLMo2-7B-Instruct, and Hermes-3-Llama-3.1-8B. A pinned OLMo tokenizer
 preflight covered all 113,458 runnable full-data condition prompts in the
 longer verbalized-confidence format: the maximum was 3,453 tokens, with zero
 4,096-token context violations and zero string-transport token mismatches.
 Including the 24-token confidence-generation allowance, the maximum request is
-3,477 tokens. The campaign wrapper gates on this persisted preflight artifact.
+3,477 tokens. The campaign wrapper gates on persisted preflight artifacts.
 Verification after this correction: 244 tests passed under Python 3.12,
 changed Python files compiled, `git diff --check` passed, and the campaign
 wrapper passed `bash -n`.
+
+## 2026-07-30 OLMo Gate Failure and Phi-4 Substitution
+
+OLMo2-7B passed constrained extraction with complete
+`processed_logprobs` coverage on 20/20 smoke examples, but failed the
+independent native verdict gate. Only 18/20 examples both began with a
+registered verdict token and agreed with the constrained verdict, below the
+predeclared 99% minimum. Preserve the failed smoke artifact and do not run an
+OLMo pilot or weaken the gate.
+
+The replacement required matrix is Qwen3-4B, Qwen3-14B, Phi-4-14B, and
+Hermes-3-Llama-3.1-8B, spanning Qwen3, Phi-4, and Llama 3.1 families.
+`microsoft/phi-4` is pinned to revision
+`2db69c1c3e91a05d2c64a3185acfbaf36f744e25`; its pinned tokenizer preserves
+canonical chat-template IDs through string transport, exposes single-token
+A/B/T variants, supports the system role, and has a 16,384-token native
+context. It must pass the same exhaustive prompt and 20-example native plus
+constrained gates before entering the pilot.
+
+Verification after the Phi-4 substitution: 246 tests passed under Python
+3.12, changed Python files compiled, `git diff --check` passed, and the Slurm
+template passed `bash -n`.

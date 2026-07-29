@@ -51,7 +51,7 @@ history solely for debugging and auditability.
 - The affected run used malformed conversation interpretation and is invalid
   for behavioral conclusions.
 - The required replacement matrix contains four independently gated judges:
-  Qwen3-4B, Qwen3-14B, OLMo2-7B-Instruct, and Hermes3-Llama3.1-8B. Skywork
+  Qwen3-4B, Qwen3-14B, Phi-4-14B, and Hermes3-Llama3.1-8B. Skywork
   remains optional. These runs remain a stratified pilot rather than full
   MT-Bench.
 - The prescribed row-level routing split places 41 of 75 question clusters
@@ -69,6 +69,11 @@ history solely for debugging and auditability.
 - Mistral-7B remains excluded until the runner can transport and hash its
   canonical chat-template token IDs; its tokenizer explicitly warns that the
   current string render-and-reencode path is unsafe.
+- OLMo2-7B passed constrained `processed_logprobs` extraction on 20/20 smoke
+  examples, but failed the independently preregistered native verdict contract:
+  18/20 examples both started with a declared verdict token and agreed with the
+  constrained verdict, below the 99% gate. The failed smoke is retained as an
+  exclusion artifact; Phi-4-14B is the public third-family replacement.
 
 ## Reproducibility
 

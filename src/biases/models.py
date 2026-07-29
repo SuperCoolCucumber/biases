@@ -192,6 +192,13 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         revision="470b1fba1ae01581f270116362ee4aa1b97f4c84",
         stop_token_texts=("<|endoftext|>",),
     ),
+    "phi4-14b": ModelProfile(
+        registry_name="phi4-14b",
+        hf_model_name="microsoft/phi-4",
+        family="phi4",
+        revision="2db69c1c3e91a05d2c64a3185acfbaf36f744e25",
+        stop_token_texts=("<|im_end|>", "<|endoftext|>"),
+    ),
 }
 
 

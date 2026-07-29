@@ -67,9 +67,10 @@ def test_required_paper_model_families_are_registered() -> None:
     assert {
         "qwen3-4b",
         "qwen3-14b",
-        "olmo2-7b-instruct",
+        "phi4-14b",
         "hermes3-llama3.1-8b",
     }.issubset(names)
+    assert "olmo2-7b-instruct" in names
     assert "gemma2-9b-it" in names
     assert "mistral-7b-instruct-v0.3" in names
 
@@ -82,6 +83,7 @@ def test_full_run_models_pin_hugging_face_revisions() -> None:
         "skywork-critic-8b",
         "hermes3-llama3.1-8b",
         "olmo2-7b-instruct",
+        "phi4-14b",
     )
     for model_name in model_names:
         revision = get_model_profile(model_name).revision
@@ -97,6 +99,17 @@ def test_olmo2_profile_uses_the_pinned_text_prompt_contract() -> None:
     assert profile.revision == "470b1fba1ae01581f270116362ee4aa1b97f4c84"
     assert profile.assistant_prefill == ""
     assert profile.stop_token_texts == ("<|endoftext|>",)
+    assert profile.supports_system_role is True
+    assert profile.supports_text_prompt_transport is True
+
+
+def test_phi4_profile_uses_the_pinned_text_prompt_contract() -> None:
+    profile = get_model_profile("phi4-14b")
+
+    assert profile.hf_model_name == "microsoft/phi-4"
+    assert profile.family == "phi4"
+    assert profile.revision == "2db69c1c3e91a05d2c64a3185acfbaf36f744e25"
+    assert profile.stop_token_texts == ("<|im_end|>", "<|endoftext|>")
     assert profile.supports_system_role is True
     assert profile.supports_text_prompt_transport is True
 
@@ -171,5 +184,6 @@ def test_existing_slurm_model_names_remain_registered() -> None:
         "Skywork/Skywork-Critic-Llama-3.1-8B",
         "NousResearch/Hermes-3-Llama-3.1-8B",
         "allenai/OLMo-2-1124-7B-Instruct",
+        "microsoft/phi-4",
     }
     assert {get_model_profile(name).hf_model_name for name in model_names} == model_names
