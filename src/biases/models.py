@@ -29,6 +29,7 @@ class ModelProfile:
     assistant_prefill: str = ""
     stop_token_texts: tuple[str, ...] = ()
     supports_system_role: bool = True
+    supports_text_prompt_transport: bool = True
 
     def normalize_messages(
         self,
@@ -168,6 +169,7 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         family="mistral",
         revision="c170c708c41dac9275d15a8fff4eca08d52bab71",
         stop_token_texts=("</s>",),
+        supports_text_prompt_transport=False,
     ),
     "skywork-critic-8b": ModelProfile(
         registry_name="skywork-critic-8b",
@@ -175,6 +177,20 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         family="llama3",
         revision="825f34599593c0145be91644be233d5c634b2380",
         stop_token_texts=("<|eot_id|>",),
+    ),
+    "hermes3-llama3.1-8b": ModelProfile(
+        registry_name="hermes3-llama3.1-8b",
+        hf_model_name="NousResearch/Hermes-3-Llama-3.1-8B",
+        family="llama3",
+        revision="896ea440e5a9e6070e3d8a2774daf2b481ab425b",
+        stop_token_texts=("<|im_end|>",),
+    ),
+    "olmo2-7b-instruct": ModelProfile(
+        registry_name="olmo2-7b-instruct",
+        hf_model_name="allenai/OLMo-2-1124-7B-Instruct",
+        family="olmo2",
+        revision="470b1fba1ae01581f270116362ee4aa1b97f4c84",
+        stop_token_texts=("<|endoftext|>",),
     ),
 }
 

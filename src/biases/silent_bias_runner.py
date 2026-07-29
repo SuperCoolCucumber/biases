@@ -11,6 +11,7 @@ from typing import Any, Literal, Protocol
 from biases.models import get_model_profile
 from biases.pairing import file_sha256, make_pair_identity_key, normalize_ordering
 from biases.position_bias import (
+    CONSTRAINED_LOGPROBS_MODE,
     DEFAULT_MAX_MODEL_LEN,
     JUDGE_OUTPUT_PARSER_VERSION,
     VLLMJudge,
@@ -61,6 +62,7 @@ UNCERTAINTY_METHODS = (
 
 class JudgeBackend(Protocol):
     model_name: str
+    logprobs_mode: str
 
     def render_messages(self, messages: list[dict[str, str]]) -> str: ...
 
@@ -257,6 +259,7 @@ def _validate_resume_rows(
             consistency_runs=expected_consistency,
             temperature=sampling_temperature,
             consistency_schedule=consistency_schedule,
+            logprobs_mode=CONSTRAINED_LOGPROBS_MODE,
         )
         expected_choice_prompt = _prompt_package(
             judge=judge,
@@ -308,6 +311,12 @@ def _validate_resume_rows(
             "judge_output_parser_version": (
                 metadata.get("judge_output_parser_version")
                 == JUDGE_OUTPUT_PARSER_VERSION
+            ),
+            "spec_logprobs_mode": (
+                spec.get("logprobs_mode") == CONSTRAINED_LOGPROBS_MODE
+            ),
+            "metadata_logprobs_mode": (
+                metadata.get("logprobs_mode") == CONSTRAINED_LOGPROBS_MODE
             ),
             "verbalized_parse_status": (
                 metadata.get("verbalized_parse_status")
@@ -550,6 +559,7 @@ def _evaluate_batch(
             consistency_runs=run_counts[index],
             temperature=sampling_temperature,
             consistency_schedule=consistency_schedule,
+            logprobs_mode=CONSTRAINED_LOGPROBS_MODE,
         )
         spec_hash = stable_hash(spec.model_dump(mode="json"))
         record = _build_run_record(
@@ -582,6 +592,7 @@ def _evaluate_batch(
                 "stage": stage,
                 "consistency_runs_actual": run_counts[index],
                 "template_variant_id": condition.variant_id,
+                "logprobs_mode": CONSTRAINED_LOGPROBS_MODE,
                 "max_num_batched_tokens": max_num_batched_tokens,
                 "max_num_seqs": max_num_seqs,
             }
@@ -666,6 +677,7 @@ def _clean_summary_row(record: RunRecord) -> dict[str, Any]:
         "judge_output_parser_version": record.metadata.get(
             "judge_output_parser_version"
         ),
+        "logprobs_mode": record.spec.logprobs_mode,
         "verbalized_parse_status": record.metadata.get(
             "verbalized_parse_status"
         ),
@@ -705,6 +717,7 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
         "judge_output_parser_version": record.metadata.get(
             "judge_output_parser_version"
         ),
+        "logprobs_mode": record.spec.logprobs_mode,
         "verbalized_parse_status": record.metadata.get(
             "verbalized_parse_status"
         ),
@@ -732,7 +745,13 @@ def _materialize_derived_outputs(
 ) -> list[RunRecord]:
     ordered_raw_rows = sorted(raw_rows, key=_record_sort_key)
     records = [RunRecord.model_validate(row) for row in ordered_raw_rows]
-    uncertainty_rows = [_record_to_uncertainty_row(record) for record in records]
+    uncertainty_rows = [
+        {
+            **_record_to_uncertainty_row(record),
+            "logprobs_mode": record.spec.logprobs_mode,
+        }
+        for record in records
+    ]
     pair_rows = [
         _clean_summary_row(record)
         if stage == "stage_a"
@@ -789,6 +808,16 @@ def _vllm_scheduler_provenance(
         "max_num_batched_tokens": max_num_batched_tokens,
         "max_num_seqs": max_num_seqs,
     }
+
+
+def _require_processed_logprobs(judge: JudgeBackend) -> None:
+    actual = getattr(judge, "logprobs_mode", None)
+    if actual != CONSTRAINED_LOGPROBS_MODE:
+        raise ValueError(
+            "Silent Bias runs require processed constrained log probabilities; "
+            f"judge.logprobs_mode is {actual!r}, expected "
+            f"{CONSTRAINED_LOGPROBS_MODE!r}"
+        )
 
 
 def run_silent_bias_clean(
@@ -855,6 +884,7 @@ def run_silent_bias_clean(
             f"Judge resolved to {active_judge.model_name!r}, expected "
             f"{canonical_model_name!r}"
         )
+    _require_processed_logprobs(active_judge)
     existing_rows = (
         _read_jsonl(paths.raw_records, recover_incomplete_tail=True)
         if resume
@@ -914,6 +944,7 @@ def run_silent_bias_clean(
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "logprobs_mode": CONSTRAINED_LOGPROBS_MODE,
         "verbalized_parse_status_counts": _verbalized_parse_status_counts(
             records
         ),
@@ -992,6 +1023,13 @@ def run_silent_bias_cued(
         raise ValueError(
             "Stage A summary uses an incompatible judge_output_parser_version"
         )
+    if any(
+        row.get("logprobs_mode") != CONSTRAINED_LOGPROBS_MODE
+        for row in model_clean_rows
+    ):
+        raise ValueError(
+            "Stage A summary uses an incompatible logprobs_mode"
+        )
     clean_summaries = tuple(
         summary
         for summary in clean_summaries_from_rows(model_clean_rows)
@@ -1033,6 +1071,7 @@ def run_silent_bias_cued(
             f"Judge resolved to {active_judge.model_name!r}, expected "
             f"{canonical_model_name!r}"
         )
+    _require_processed_logprobs(active_judge)
     existing_rows = (
         _read_jsonl(paths.raw_records, recover_incomplete_tail=True)
         if resume
@@ -1096,6 +1135,7 @@ def run_silent_bias_cued(
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "logprobs_mode": CONSTRAINED_LOGPROBS_MODE,
         "verbalized_parse_status_counts": _verbalized_parse_status_counts(
             records
         ),

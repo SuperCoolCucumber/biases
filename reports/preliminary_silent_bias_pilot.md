@@ -28,6 +28,18 @@ SHA-256
 All smoke tests, the pilot, and its analyses will be rerun before the full-data
 campaign begins.
 
+A second inference audit also found that vLLM 0.19.1 defaults to returning
+full-vocabulary `raw_logprobs` before applying `allowed_token_ids`. The first
+correctly parsed replacement Qwen3-4B pilot therefore did not necessarily
+contain all registered A/B/T token logits. Its three-label probabilities
+cannot be reconstructed from the stored normalized values, so that run is also
+retained only as an engineering audit artifact. Replacement inference requires
+`processed_logprobs`, exact registered-token filtering, and complete
+allowed-token coverage before any pilot result is reported. The audit observed
+incomplete positive label support in 48/396 clean rows and 1,321/6,336 cued
+rows, confirming that the stored normalized values are not a complete
+three-label logit pass.
+
 ## Invalidated Preliminary Findings
 
 No RQ1, RQ2, or RQ3 numerical claim from the affected pilot is retained. The
@@ -38,8 +50,10 @@ history solely for debugging and auditability.
 
 - The affected run used malformed conversation interpretation and is invalid
   for behavioral conclusions.
-- The replacement results will still cover one 4B judge model and a stratified
-  pilot, not full MT-Bench.
+- The required replacement matrix contains four independently gated judges:
+  Qwen3-4B, Qwen3-14B, OLMo2-7B-Instruct, and Hermes3-Llama3.1-8B. Skywork
+  remains optional. These runs remain a stratified pilot rather than full
+  MT-Bench.
 - The prescribed row-level routing split places 41 of 75 question clusters
   across both calibration and test, weakening an independent-transfer
   interpretation without changing the preregistered split.
@@ -52,6 +66,9 @@ history solely for debugging and auditability.
 - Near-separation warnings occur in exploratory mixed-effects models.
 - Full runs must validate verdict extraction independently for every additional
   model before any result is pooled or compared.
+- Mistral-7B remains excluded until the runner can transport and hash its
+  canonical chat-template token IDs; its tokenizer explicitly warns that the
+  current string render-and-reencode path is unsafe.
 
 ## Reproducibility
 

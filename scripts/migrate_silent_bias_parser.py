@@ -15,6 +15,7 @@ from biases.parser_integrity import (
     migrate_record_to_current_parser,
 )
 from biases.position_bias import (
+    CONSTRAINED_LOGPROBS_MODE,
     JUDGE_OUTPUT_PARSER_VERSION,
     _record_to_uncertainty_row,
 )
@@ -28,6 +29,11 @@ from biases.stage_planning import (
 
 
 StageName = Literal["stage_a", "stage_b"]
+LogprobsMode = Literal["raw_logprobs", "processed_logprobs"]
+LEGACY_LOGPROBS_MODE: LogprobsMode = "raw_logprobs"
+VALID_LOGPROBS_MODES = frozenset(
+    (LEGACY_LOGPROBS_MODE, CONSTRAINED_LOGPROBS_MODE)
+)
 RAW_FILENAMES: Mapping[StageName, str] = {
     "stage_a": "silent_bias_stage_a_run_records.jsonl",
     "stage_b": "silent_bias_stage_b_run_records.jsonl",
@@ -186,10 +192,57 @@ def _scheduler_value(
     return value
 
 
+def _logprobs_mode_value(
+    summary: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    stage: StageName,
+) -> LogprobsMode:
+    observed: set[str] = set()
+    for row in rows:
+        for container_name in ("spec", "metadata"):
+            container = row.get(container_name)
+            if not isinstance(container, Mapping):
+                continue
+            value = container.get("logprobs_mode")
+            if value is None:
+                continue
+            if value not in VALID_LOGPROBS_MODES:
+                raise ValueError(
+                    f"{stage} raw {container_name}.logprobs_mode has "
+                    f"unsupported value {value!r}"
+                )
+            observed.add(str(value))
+
+    summary_value = summary.get("logprobs_mode")
+    if summary_value is not None:
+        if summary_value not in VALID_LOGPROBS_MODES:
+            raise ValueError(
+                f"{stage} summary logprobs_mode has unsupported value "
+                f"{summary_value!r}"
+            )
+        observed.add(str(summary_value))
+
+    if len(observed) > 1:
+        raise ValueError(
+            f"{stage} has inconsistent logprobs_mode values: "
+            f"{sorted(observed)!r}"
+        )
+    if not observed:
+        return LEGACY_LOGPROBS_MODE
+    value = next(iter(observed))
+    return (
+        LEGACY_LOGPROBS_MODE
+        if value == LEGACY_LOGPROBS_MODE
+        else "processed_logprobs"
+    )
+
+
 def _migrate_rows(
     rows: Sequence[Mapping[str, Any]],
     *,
     stage: StageName,
+    logprobs_mode: LogprobsMode,
     max_num_batched_tokens: int | None,
     max_num_seqs: int | None,
 ) -> tuple[dict[str, Any], ...]:
@@ -206,9 +259,13 @@ def _migrate_rows(
         metadata = row.get("metadata")
         if not isinstance(metadata, Mapping):
             raise ValueError(f"{stage} record {record_id!r} has no metadata object")
+        spec = row.get("spec")
+        if not isinstance(spec, Mapping):
+            raise ValueError(f"{stage} record {record_id!r} has no spec object")
         candidate = dict(row)
         candidate["metadata"] = {
             **metadata,
+            "logprobs_mode": logprobs_mode,
             "max_num_batched_tokens": max_num_batched_tokens,
             "max_num_seqs": max_num_seqs,
         }
@@ -240,6 +297,10 @@ def _rematerialize(
     score_rows = tuple(
         {
             **_record_to_uncertainty_row(record),
+            "logprobs_mode": (
+                record.metadata.get("logprobs_mode")
+                or record.spec.logprobs_mode
+            ),
             "verbalized_parse_status": record.metadata.get(
                 "verbalized_parse_status"
             ),
@@ -247,9 +308,17 @@ def _rematerialize(
         for record in records
     )
     pair_rows = tuple(
-        _clean_summary_row(record)
-        if stage == "stage_a"
-        else _cued_summary_row(record)
+        {
+            **(
+                _clean_summary_row(record)
+                if stage == "stage_a"
+                else _cued_summary_row(record)
+            ),
+            "logprobs_mode": (
+                record.metadata.get("logprobs_mode")
+                or record.spec.logprobs_mode
+            ),
+        }
         for record in records
     )
     return score_rows, pair_rows
@@ -322,6 +391,7 @@ def _migrated_summary(
     stage: StageName,
     target_dir: Path,
     record_count: int,
+    logprobs_mode: LogprobsMode,
     max_num_batched_tokens: int | None,
     max_num_seqs: int | None,
     raw_rows: Sequence[Mapping[str, Any]],
@@ -334,6 +404,7 @@ def _migrated_summary(
     )
     migrated["judge_output_parser_version"] = JUDGE_OUTPUT_PARSER_VERSION
     migrated["records_written"] = record_count
+    migrated["logprobs_mode"] = logprobs_mode
     migrated["max_num_batched_tokens"] = max_num_batched_tokens
     migrated["max_num_seqs"] = max_num_seqs
     migrated["parser_migration_dropped_incomplete_tail"] = (
@@ -469,6 +540,11 @@ def _build_migration(
             source_dir / SUMMARY_FILENAMES[stage]
         )
         summary_for_scheduler = source_summary or {}
+        logprobs_mode = _logprobs_mode_value(
+            summary_for_scheduler,
+            checkpoint.rows,
+            stage=stage,
+        )
         max_num_batched_tokens = _scheduler_value(
             summary_for_scheduler,
             checkpoint.rows,
@@ -484,6 +560,7 @@ def _build_migration(
         raw_rows = _migrate_rows(
             checkpoint.rows,
             stage=stage,
+            logprobs_mode=logprobs_mode,
             max_num_batched_tokens=max_num_batched_tokens,
             max_num_seqs=max_num_seqs,
         )
@@ -493,6 +570,7 @@ def _build_migration(
             stage=stage,
             target_dir=target_dir,
             record_count=len(raw_rows),
+            logprobs_mode=logprobs_mode,
             max_num_batched_tokens=max_num_batched_tokens,
             max_num_seqs=max_num_seqs,
             raw_rows=raw_rows,
@@ -787,6 +865,10 @@ def migrate_artifact_directory(
         "source_dir": str(resolved_source),
         "target_dir": None if dry_run else str(target_dir),
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "logprobs_mode": {
+            stage: result.summary["logprobs_mode"]
+            for stage, result in migrated.items()
+        },
         "protected_fields_preserved": list(PROTECTED_FIELDS),
         "stages_migrated": list(migrated),
         "records": {

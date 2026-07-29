@@ -64,7 +64,13 @@ def test_registry_rejects_unknown_model() -> None:
 
 def test_required_paper_model_families_are_registered() -> None:
     names = set(available_model_names())
-    assert {"qwen3-4b", "qwen3-14b", "gemma2-9b-it"}.issubset(names)
+    assert {
+        "qwen3-4b",
+        "qwen3-14b",
+        "olmo2-7b-instruct",
+        "hermes3-llama3.1-8b",
+    }.issubset(names)
+    assert "gemma2-9b-it" in names
     assert "mistral-7b-instruct-v0.3" in names
 
 
@@ -74,11 +80,25 @@ def test_full_run_models_pin_hugging_face_revisions() -> None:
         "qwen3-14b",
         "mistral-7b-instruct-v0.3",
         "skywork-critic-8b",
+        "hermes3-llama3.1-8b",
+        "olmo2-7b-instruct",
     )
     for model_name in model_names:
         revision = get_model_profile(model_name).revision
         assert revision is not None
         assert len(revision) == 40
+
+
+def test_olmo2_profile_uses_the_pinned_text_prompt_contract() -> None:
+    profile = get_model_profile("olmo2-7b-instruct")
+
+    assert profile.hf_model_name == "allenai/OLMo-2-1124-7B-Instruct"
+    assert profile.family == "olmo2"
+    assert profile.revision == "470b1fba1ae01581f270116362ee4aa1b97f4c84"
+    assert profile.assistant_prefill == ""
+    assert profile.stop_token_texts == ("<|endoftext|>",)
+    assert profile.supports_system_role is True
+    assert profile.supports_text_prompt_transport is True
 
 
 def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
@@ -106,6 +126,7 @@ def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
 
     assert captured["revision"] == profile.revision
     assert captured["tokenizer_revision"] == profile.revision
+    assert captured["logprobs_mode"] == "processed_logprobs"
     assert "max_num_batched_tokens" not in captured
     assert "max_num_seqs" not in captured
 
@@ -118,8 +139,24 @@ def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
 
     assert captured["max_num_batched_tokens"] == 32768
     assert captured["max_num_seqs"] == 128
+    assert captured["logprobs_mode"] == "processed_logprobs"
+    assert judge.logprobs_mode == "processed_logprobs"
     assert judge.max_num_batched_tokens == 32768
     assert judge.max_num_seqs == 128
+
+
+def test_mistral_fails_closed_until_token_prompt_transport_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeLLM:
+        def __init__(self, **kwargs: object) -> None:
+            raise AssertionError(f"engine must not start: {kwargs!r}")
+
+    monkeypatch.setattr(position_bias, "LLM", _FakeLLM)
+    monkeypatch.setattr(position_bias, "SamplingParams", object())
+
+    with pytest.raises(RuntimeError, match="requires a token-ID prompt adapter"):
+        position_bias.VLLMJudge("mistral-7b-instruct-v0.3")
 
 
 def test_existing_slurm_model_names_remain_registered() -> None:
@@ -132,5 +169,7 @@ def test_existing_slurm_model_names_remain_registered() -> None:
         "mistralai/Mistral-7B-Instruct-v0.3",
         "google/gemma-2-27b-it",
         "Skywork/Skywork-Critic-Llama-3.1-8B",
+        "NousResearch/Hermes-3-Llama-3.1-8B",
+        "allenai/OLMo-2-1124-7B-Instruct",
     }
     assert {get_model_profile(name).hf_model_name for name in model_names} == model_names

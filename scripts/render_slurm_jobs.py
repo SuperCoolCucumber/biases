@@ -65,6 +65,20 @@ MODEL_SPECS = {
         "128G",
         1,
     ),
+    "hermes3_llama31_8b": ModelSpec(
+        "hermes3_llama31_8b",
+        "NousResearch/Hermes-3-Llama-3.1-8B",
+        1,
+        "128G",
+        1,
+    ),
+    "olmo2_7b_instruct": ModelSpec(
+        "olmo2_7b_instruct",
+        "allenai/OLMo-2-1124-7B-Instruct",
+        1,
+        "128G",
+        1,
+    ),
 }
 
 

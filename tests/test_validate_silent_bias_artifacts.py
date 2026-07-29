@@ -10,11 +10,13 @@ from types import ModuleType
 import pytest
 
 from biases.models import get_model_profile
+from biases.position_bias import CONSTRAINED_LOGPROBS_MODE
 from biases.schemas import VerdictLabel
 from biases.silent_bias_runner import (
     run_silent_bias_clean,
     run_silent_bias_cued,
 )
+from biases.utils import stable_hash
 
 
 SCRIPT_PATH = (
@@ -64,6 +66,7 @@ migration_module = _load_migration_module()
 class _FakeJudge:
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
+        self.logprobs_mode = CONSTRAINED_LOGPROBS_MODE
 
     def render_messages(self, messages: list[dict[str, str]]) -> str:
         return "\n".join(
@@ -308,6 +311,42 @@ def test_validator_accepts_complete_stage_grids_and_schedule(
     assert parsed_args.min_verbalized_availability == 0.75
 
 
+def test_validator_requires_processed_logprobs_mode_in_every_artifact_layer(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "qwen"
+    _write_source(csv_path)
+    _run_fixture(csv_path, output_dir, registry_name="qwen3-4b")
+
+    raw_path = output_dir / "silent_bias_stage_a_run_records.jsonl"
+    flat_path = output_dir / "silent_bias_stage_a_uncertainty_scores.jsonl"
+    pair_path = output_dir / "silent_bias_stage_a_pair_summary.jsonl"
+    summary_path = output_dir / "silent_bias_stage_a_summary.json"
+    raw_rows = _read_jsonl(raw_path)
+    flat_rows = _read_jsonl(flat_path)
+    pair_rows = _read_jsonl(pair_path)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    raw_rows[0]["spec"].pop("logprobs_mode")
+    raw_rows[0]["metadata"].pop("logprobs_mode")
+    flat_rows[0].pop("logprobs_mode")
+    pair_rows[0].pop("logprobs_mode")
+    summary.pop("logprobs_mode")
+    _write_jsonl(raw_path, raw_rows)
+    _write_jsonl(flat_path, flat_rows)
+    _write_jsonl(pair_path, pair_rows)
+    summary_path.write_text(
+        f"{json.dumps(summary)}\n",
+        encoding="utf-8",
+    )
+
+    report = _validate(csv_path, output_dir)
+
+    assert report["passed"] is False
+    assert report["error_counts_by_code"]["logprobs_mode_mismatch"] == 5
+
+
 def test_validator_requires_current_status_and_stage_status_counts(
     tmp_path: Path,
 ) -> None:
@@ -543,6 +582,10 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
     assert report["passed"] is True
     assert json.loads(report_path.read_text(encoding="utf-8")) == report
     assert report["records"] == {"stage_a": 2, "stage_b": 32}
+    assert report["logprobs_mode"] == {
+        "stage_a": CONSTRAINED_LOGPROBS_MODE,
+        "stage_b": CONSTRAINED_LOGPROBS_MODE,
+    }
     assert _protected_record_fields(destination_dir) == protected_before
     assert _validate(csv_path, destination_dir)["passed"] is True
     source_rows = _read_jsonl(
@@ -573,8 +616,97 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
             ).read_text(encoding="utf-8")
         )
         assert summary["judge_output_parser_version"] == "strict_v2"
+        assert summary["logprobs_mode"] == CONSTRAINED_LOGPROBS_MODE
         assert summary["max_num_batched_tokens"] is None
         assert summary["max_num_seqs"] is None
+
+
+def test_parser_migration_marks_undeclared_legacy_logprobs_as_raw(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    source_dir = tmp_path / "legacy"
+    destination_dir = tmp_path / "migrated"
+    _write_source(csv_path)
+    _run_fixture(csv_path, source_dir, registry_name="qwen3-4b")
+
+    for stage in ("stage_a", "stage_b"):
+        raw_path = source_dir / f"silent_bias_{stage}_run_records.jsonl"
+        flat_path = (
+            source_dir / f"silent_bias_{stage}_uncertainty_scores.jsonl"
+        )
+        pair_path = source_dir / f"silent_bias_{stage}_pair_summary.jsonl"
+        summary_path = source_dir / f"silent_bias_{stage}_summary.json"
+        raw_rows = _read_jsonl(raw_path)
+        flat_rows = _read_jsonl(flat_path)
+        pair_rows = _read_jsonl(pair_path)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        for row in raw_rows:
+            row["spec"].pop("logprobs_mode")
+            row["metadata"].pop("logprobs_mode")
+            row["spec_hash"] = stable_hash(row["spec"])
+        for row in flat_rows:
+            row.pop("logprobs_mode")
+        for row in pair_rows:
+            row.pop("logprobs_mode")
+        summary.pop("logprobs_mode")
+        _write_jsonl(raw_path, raw_rows)
+        _write_jsonl(flat_path, flat_rows)
+        _write_jsonl(pair_path, pair_rows)
+        summary_path.write_text(
+            f"{json.dumps(summary)}\n",
+            encoding="utf-8",
+        )
+
+    protected_before = _protected_record_fields(source_dir)
+    report = migration_module.migrate_artifact_directory(
+        source_dir=source_dir,
+        destination_dir=destination_dir,
+    )
+
+    assert report["logprobs_mode"] == {
+        "stage_a": "raw_logprobs",
+        "stage_b": "raw_logprobs",
+    }
+    assert _protected_record_fields(destination_dir) == protected_before
+    for stage in ("stage_a", "stage_b"):
+        raw_rows = _read_jsonl(
+            destination_dir / f"silent_bias_{stage}_run_records.jsonl"
+        )
+        flat_rows = _read_jsonl(
+            destination_dir
+            / f"silent_bias_{stage}_uncertainty_scores.jsonl"
+        )
+        pair_rows = _read_jsonl(
+            destination_dir / f"silent_bias_{stage}_pair_summary.jsonl"
+        )
+        summary = json.loads(
+            (
+                destination_dir / f"silent_bias_{stage}_summary.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert {
+            (
+                row["spec"].get("logprobs_mode"),
+                row["metadata"]["logprobs_mode"],
+            )
+            for row in raw_rows
+        } == {(None, "raw_logprobs")}
+        assert all(
+            row["spec_hash"] == stable_hash(row["spec"])
+            for row in raw_rows
+        )
+        assert {row["logprobs_mode"] for row in flat_rows} == {
+            "raw_logprobs"
+        }
+        assert {row["logprobs_mode"] for row in pair_rows} == {
+            "raw_logprobs"
+        }
+        assert summary["logprobs_mode"] == "raw_logprobs"
+
+    validation = _validate(csv_path, destination_dir)
+    assert validation["passed"] is False
+    assert validation["error_counts_by_code"]["logprobs_mode_mismatch"] > 0
 
 
 def test_parser_migration_dry_run_and_in_place_backups(

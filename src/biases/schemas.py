@@ -196,6 +196,7 @@ class ExperimentSpec(BaseModel):
     consistency_runs: int
     temperature: float
     consistency_schedule: Literal["all", "extremes"] | None = None
+    logprobs_mode: Literal["raw_logprobs", "processed_logprobs"] | None = None
 
 
 class RunRecord(BaseModel):

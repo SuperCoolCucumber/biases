@@ -15,6 +15,7 @@ from biases.models import get_model_profile
 from biases.pairing import file_sha256, make_pair_identity_key
 from biases.parser_integrity import ParserIntegrityError, derive_parser_fields
 from biases.position_bias import (
+    CONSTRAINED_LOGPROBS_MODE,
     JUDGE_OUTPUT_PARSER_VERSION,
     load_position_pairs,
     verbalized_parse_status,
@@ -721,6 +722,7 @@ def _expected_flat_projection(record: Mapping[str, Any]) -> dict[str, Any]:
         "judge_output_parser_version": metadata.get(
             "judge_output_parser_version"
         ),
+        "logprobs_mode": spec.get("logprobs_mode"),
         "max_num_batched_tokens": metadata.get("max_num_batched_tokens"),
         "max_num_seqs": metadata.get("max_num_seqs"),
     }
@@ -954,6 +956,62 @@ def _validate_scheduler_provenance(
                         stage=stage,
                         record_id=row.get("record_id"),
                     )
+
+
+def _validate_logprobs_mode_provenance(
+    raw_rows: Sequence[Mapping[str, Any]],
+    score_rows: Sequence[Mapping[str, Any]],
+    pair_rows: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    *,
+    collector: IssueCollector,
+    artifact_dir: Path,
+    stage: StageName,
+) -> None:
+    expected = CONSTRAINED_LOGPROBS_MODE
+    if summary.get("logprobs_mode") != expected:
+        collector.add(
+            "logprobs_mode_mismatch",
+            f"stage summary logprobs_mode is "
+            f"{summary.get('logprobs_mode')!r}; expected {expected!r}",
+            artifact_dir=artifact_dir,
+            stage=stage,
+        )
+
+    for row in raw_rows:
+        record_id = row.get("record_id")
+        spec = row.get("spec")
+        metadata = row.get("metadata")
+        spec = spec if isinstance(spec, Mapping) else {}
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        for location, actual in (
+            ("raw spec", spec.get("logprobs_mode")),
+            ("raw metadata", metadata.get("logprobs_mode")),
+        ):
+            if actual != expected:
+                collector.add(
+                    "logprobs_mode_mismatch",
+                    f"{location} logprobs_mode is {actual!r}; "
+                    f"expected {expected!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                    record_id=record_id,
+                )
+
+    for location, rows in (
+        ("flat row", score_rows),
+        ("pair summary", pair_rows),
+    ):
+        for row in rows:
+            if row.get("logprobs_mode") != expected:
+                collector.add(
+                    "logprobs_mode_mismatch",
+                    f"{location} logprobs_mode is "
+                    f"{row.get('logprobs_mode')!r}; expected {expected!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                    record_id=row.get("record_id"),
+                )
 
 
 def _validate_verbalized_status_summary(
@@ -1702,6 +1760,15 @@ def _validate_artifact_dir(
                 artifact_dir=artifact_dir,
                 stage=stage,
             )
+            _validate_logprobs_mode_provenance(
+                raw_rows[stage],
+                score_rows[stage],
+                pair_rows[stage],
+                stage_summaries[stage],
+                collector=collector,
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
             _validate_verbalized_status_summary(
                 raw_rows[stage],
                 stage_summaries[stage],
@@ -1901,6 +1968,15 @@ def _validate_artifact_dir(
             stage=stage,
         )
         _validate_scheduler_provenance(
+            raw_rows[stage],
+            score_rows[stage],
+            pair_rows[stage],
+            stage_summaries[stage],
+            collector=collector,
+            artifact_dir=artifact_dir,
+            stage=stage,
+        )
+        _validate_logprobs_mode_provenance(
             raw_rows[stage],
             score_rows[stage],
             pair_rows[stage],

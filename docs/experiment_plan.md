@@ -93,6 +93,42 @@ dose for every family, direction, and ordering: 18 conditions total. Reducing
 `k` from 8 to 4 is also permitted. Select and record any reduction in
 `ExperimentSpec` before the full run.
 
+### Constrained probability contract
+
+The A/B/tie probability channel is the distribution after vLLM applies the
+registered first-token whitelist, not raw full-vocabulary top-k output. Runs
+must use `logprobs_mode=processed_logprobs`, aggregate only the exact
+model-registry token IDs assigned to A, B, and tie, and require every registered
+ID to be present. Decoded-token string matching is not an admissible fallback.
+The mode is recorded in the experiment specification, raw records, flat
+scores, pair summaries, stage summaries, and smoke artifact.
+
+Artifacts produced from raw full-vocabulary top-k logprobs cannot be repaired
+from their stored three-label probabilities: missing allowed-token logits are
+not recoverable. They must be retained only as invalidated audit artifacts and
+rerun before analysis.
+
+### Model matrix amendment (2026-07-30)
+
+The gated full-run minimum is four judges: Qwen3-4B, Qwen3-14B,
+OLMo2-7B-Instruct (`allenai/OLMo-2-1124-7B-Instruct`), and
+Hermes3-Llama3.1-8B (`NousResearch/Hermes-3-Llama-3.1-8B`). Every checkpoint
+is pinned to an immutable model revision and must pass its own 20-example
+native and constrained verdict-extraction gates. Skywork-Critic-Llama-3.1-8B
+is optional and is included only if it passes those same gates; otherwise its
+failed smoke remains an explicit exclusion artifact.
+The shared campaign context limit is 4,096 tokens. Before inference, every
+model must pass a full-grid prompt-length preflight that includes generation
+headroom; the persisted report is an operational gate, not merely a diagnostic.
+
+Mistral-7B-Instruct-v0.3 remains a stretch model. Its pinned
+`MistralCommonTokenizer` warns that string rendering with
+`apply_chat_template(..., tokenize=False)` is unsafe, while the current runner
+transports auditable string prompts to vLLM. Mistral is therefore excluded
+until a token-ID prompt adapter preserves canonical chat-template IDs and
+includes those IDs in prompt hashing and provenance. This is an implementation
+integrity exclusion, not a result-driven model substitution.
+
 ## Splits and Analysis Population
 
 - `calibration`: select confidence thresholds only.
@@ -256,10 +292,11 @@ Before a full run:
 
 1. Require a passing 20-example verdict-extraction artifact per model. Every
    constrained raw output must reparse to its returned deterministic MAP
-   verdict with valid `A`/`B`/`tie` probability support. On the exact same
-   prompts, the unconstrained greedy native contract rate must be at least
-   99%: the output is parseable, its first generated token is a declared
-   verdict token, and its verdict agrees with the constrained verdict.
+   verdict with valid `A`/`B`/`tie` probability support computed from complete
+   post-whitelist (`processed_logprobs`) token coverage. On the exact same
+   prompts, the unconstrained greedy native contract rate must be at least 99%:
+   the output is parseable, its first generated token is a declared verdict
+   token, and its verdict agrees with the constrained verdict.
 2. Complete both stages on all 198 pilot rows in both orderings.
 3. Require every raw and flat pilot row to carry the current judge-output
    parser version. An explicit migration from an older parser must reparse the

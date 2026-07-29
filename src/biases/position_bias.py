@@ -44,6 +44,7 @@ DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-14B-Instruct"
 DEFAULT_DATA_PATH = data_path("processed", "mtbench_full.csv")
 DEFAULT_MAX_MODEL_LEN = 8192
 JUDGE_OUTPUT_PARSER_VERSION = "strict_v2"
+CONSTRAINED_LOGPROBS_MODE = "processed_logprobs"
 VerbalizedParseStatus = Literal[
     "parsed",
     "missing",
@@ -725,8 +726,15 @@ class VLLMJudge:
             raise ValueError("max_num_seqs must be positive when provided")
 
         self.profile = get_model_profile(model_name)
+        if not self.profile.supports_text_prompt_transport:
+            raise RuntimeError(
+                f"Model {self.profile.registry_name!r} requires a token-ID "
+                "prompt adapter; string chat-template transport is not "
+                "validated for this tokenizer."
+            )
         self.model_name = self.profile.hf_model_name
         self.require_label_logprobs = True
+        self.logprobs_mode = CONSTRAINED_LOGPROBS_MODE
         self.max_num_batched_tokens = max_num_batched_tokens
         self.max_num_seqs = max_num_seqs
         disable_custom_all_reduce = os.environ.get("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "").lower()
@@ -744,6 +752,7 @@ class VLLMJudge:
             "dtype": dtype,
             "disable_custom_all_reduce": disable_custom_all_reduce,
             "enforce_eager": enforce_eager,
+            "logprobs_mode": self.logprobs_mode,
         }
         if max_num_batched_tokens is not None:
             llm_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
@@ -790,6 +799,12 @@ class VLLMJudge:
                 token_id = self._encode_single_token(text)
                 if token_id is None or token_id in token_ids:
                     continue
+                existing_label = token_id_to_label.get(token_id)
+                if existing_label is not None and existing_label != label:
+                    raise RuntimeError(
+                        f"Decision token ID {token_id} maps to both "
+                        f"{existing_label!r} and {label!r}."
+                    )
                 token_ids.append(token_id)
                 token_id_to_label[token_id] = label
             if not token_ids:
@@ -817,34 +832,36 @@ class VLLMJudge:
             value = getattr(candidate, "logprob", None)
         return None if value is None else float(value)
 
-    @staticmethod
-    def _decoded_token(candidate: Any) -> str:
-        if isinstance(candidate, dict):
-            return str(candidate.get("decoded_token", ""))
-        return str(getattr(candidate, "decoded_token", ""))
-
     def _extract_label_probs(self, first_token_logprobs: Any | None) -> dict[str, float]:
         if not first_token_logprobs:
-            return {}
+            raise RuntimeError(
+                "vLLM did not return processed first-token log probabilities "
+                "for the registered decision token IDs."
+            )
 
-        label_logprobs: list[tuple[str, float]] = []
+        registered_logprobs: dict[int, tuple[str, float]] = {}
         for token_id, candidate in first_token_logprobs.items():
-            logprob = self._logprob_value(candidate)
-            if logprob is None:
-                continue
             try:
-                label = self.decision_token_id_to_label.get(int(token_id))
+                normalized_token_id = int(token_id)
             except (TypeError, ValueError):
-                label = None
+                continue
+            label = self.decision_token_id_to_label.get(normalized_token_id)
             if label is None:
-                decoded = self._decoded_token(candidate).strip().upper()
-                label = {"A": "A", "B": "B", "T": "tie"}.get(decoded)
-            if label is not None:
-                label_logprobs.append((label, logprob))
+                continue
+            logprob = self._logprob_value(candidate)
+            if logprob is not None and math.isfinite(logprob):
+                registered_logprobs[normalized_token_id] = (label, logprob)
 
-        if not label_logprobs:
-            return {}
+        expected_token_ids = set(self.decision_token_id_to_label)
+        missing_token_ids = sorted(expected_token_ids - set(registered_logprobs))
+        if missing_token_ids:
+            raise RuntimeError(
+                "vLLM did not return processed first-token log probabilities "
+                "for every registered decision token ID; missing token IDs: "
+                f"{missing_token_ids!r}."
+            )
 
+        label_logprobs = list(registered_logprobs.values())
         max_logprob = max(logprob for _, logprob in label_logprobs)
         weights = {"A": 0.0, "B": 0.0, "tie": 0.0}
         for label, logprob in label_logprobs:

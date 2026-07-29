@@ -173,17 +173,19 @@ Regenerated inputs:
 
 - pilot: 198/198 usable pairs, 99 calibration and 99 test rows, SHA-256
   `d0e2dd12c5c6a2b378b12ab0ab363850147f1fa501fd13d25860737fc80d6b7a`;
-- full: 3,355 source rows, 3,346 usable pairs, 1,677 calibration and 1,678
+- full: 3,355 source rows, 3,337 runnable pairs, 1,663 calibration and 1,674
   test rows, SHA-256
   `26cbf6de9985ddf6c5d7bacc7c46df8242882180a99b8489dab82abb90d13a54`.
 
-The nine unusable full rows are all question 127, turn 1, with an empty source
-candidate response. Full-run gates use 3,346 pairs: 6,692 Stage A and 107,072
-Stage B records per model. Checkpointing now appends crash-safe batches instead
-of rewriting the growing raw JSONL at every batch. RQ2 risk-coverage is
-`O(n log n)`, and clean/test cluster-bootstrap work is reused through exact
-question-level sufficient statistics. Rerun all four model smokes and the
-entire 198-pair pilot before starting full inference.
+The 18 non-runnable rows are all question 127: nine turn-1 comparisons have an
+empty target candidate response, and the corresponding nine turn-2 comparisons
+have an empty first-turn candidate response required as context. Full-run gates
+use 3,337 pairs: 6,674 Stage A and 106,784 Stage B records per model.
+Checkpointing now appends crash-safe batches instead of rewriting the growing
+raw JSONL at every batch. RQ2 risk-coverage is `O(n log n)`, and clean/test
+cluster-bootstrap work is reused through exact question-level sufficient
+statistics. Rerun all four model smokes and the entire 198-pair pilot before
+starting full inference.
 
 The prescribed row-level split is not question-disjoint: all 80 full-data
 question IDs occur in both calibration and test. Preserve it for the primary
@@ -226,3 +228,34 @@ stages to verify the exact experimental grid, linkage and provenance fields,
 and all parser-derived uncertainty values against their stored primitives.
 vLLM scheduler overrides are optional, recorded throughout the artifact
 bundle, and must match on resume.
+
+## 2026-07-29 Constrained-Logprob Integrity Correction
+
+The corrected-conversation Qwen3-4B pilot is also invalid for behavioral
+analysis. vLLM 0.19.1 returned default `raw_logprobs` before applying the
+registered A/B/T whitelist, so the stored normalized label probabilities can
+omit allowed-token mass and cannot be repaired from the artifact.
+
+New inference is fail-closed:
+
+- `VLLMJudge` requests `processed_logprobs`;
+- probability extraction accepts only registered token IDs and requires exact
+  coverage of every allowed ID;
+- the mode is recorded in the spec and every derived artifact layer, checked
+  on resume, and enforced by smoke and artifact validators;
+- migration marks undeclared legacy artifacts as `raw_logprobs`, preserves
+  their original `spec_hash`, and does not make them eligible for analysis.
+
+Mistral-7B-Instruct-v0.3 is deferred because its tokenizer does not validate
+the runner's string render-and-reencode prompt transport. The registry now
+fails closed for that model until a token-ID prompt adapter exists.
+The required replacement matrix is Qwen3-4B, Qwen3-14B,
+OLMo2-7B-Instruct, and Hermes-3-Llama-3.1-8B. A pinned OLMo tokenizer
+preflight covered all 113,458 runnable full-data condition prompts in the
+longer verbalized-confidence format: the maximum was 3,453 tokens, with zero
+4,096-token context violations and zero string-transport token mismatches.
+Including the 24-token confidence-generation allowance, the maximum request is
+3,477 tokens. The campaign wrapper gates on this persisted preflight artifact.
+Verification after this correction: 244 tests passed under Python 3.12,
+changed Python files compiled, `git diff --check` passed, and the campaign
+wrapper passed `bash -n`.

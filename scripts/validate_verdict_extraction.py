@@ -14,6 +14,7 @@ from biases.models import get_model_profile
 from biases.pairing import file_sha256
 from biases.paths import data_path, output_path
 from biases.position_bias import (
+    CONSTRAINED_LOGPROBS_MODE,
     DEFAULT_MAX_MODEL_LEN,
     JUDGE_OUTPUT_PARSER_VERSION,
     SamplingParams,
@@ -395,6 +396,10 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
     )
+    if judge.logprobs_mode != CONSTRAINED_LOGPROBS_MODE:
+        raise RuntimeError(
+            "Verdict extraction requires constrained processed log probabilities."
+        )
     prompts: list[str] = []
     prompt_hashes: list[str] = []
     for pair in pairs:
@@ -462,6 +467,7 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
         ).hexdigest(),
         "resolved_verdict_token_ids": judge.decision_label_token_ids,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "logprobs_mode": judge.logprobs_mode,
         "max_num_batched_tokens": max_num_batched_tokens,
         "max_num_seqs": max_num_seqs,
         **validation,

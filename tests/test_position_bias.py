@@ -313,6 +313,28 @@ class _Logprob:
         self.logprob = logprob
 
 
+def test_decision_token_map_rejects_cross_label_id_collisions() -> None:
+    class _Profile:
+        verdict_token_texts = {
+            "A": ("A",),
+            "B": ("B",),
+            "tie": ("T",),
+        }
+
+    class _Tokenizer:
+        @staticmethod
+        def encode(text: str, *, add_special_tokens: bool) -> list[int]:
+            assert add_special_tokens is False
+            return [{"A": 10, "B": 10, "T": 30}[text]]
+
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.profile = _Profile()
+    judge.tokenizer = _Tokenizer()
+
+    with pytest.raises(RuntimeError, match="maps to both 'A' and 'B'"):
+        judge._build_decision_label_token_maps()
+
+
 def test_label_probs_are_aggregated_from_decision_token_ids() -> None:
     judge = QwenJudge.__new__(QwenJudge)
     judge.decision_token_id_to_label = {
@@ -334,6 +356,56 @@ def test_label_probs_are_aggregated_from_decision_token_ids() -> None:
     assert set(probs) == {"A", "B", "tie"}
     assert probs["A"] > probs["B"] > probs["tie"]
     assert abs(sum(probs.values()) - 1.0) < 1e-9
+
+
+def test_label_probs_ignore_unregistered_decoded_label_tokens() -> None:
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.decision_token_id_to_label = {
+        10: "A",
+        20: "B",
+        30: "tie",
+    }
+
+    baseline = judge._extract_label_probs(
+        {
+            10: _Logprob("A", -0.2),
+            20: _Logprob("B", -1.0),
+            30: _Logprob("T", -2.0),
+        }
+    )
+    with_unregistered_tokens = judge._extract_label_probs(
+        {
+            10: _Logprob("A", -0.2),
+            20: _Logprob("B", -1.0),
+            30: _Logprob("T", -2.0),
+            40: _Logprob("A", 10.0),
+            50: _Logprob(" B", 9.0),
+            60: _Logprob("T", 8.0),
+        }
+    )
+
+    assert with_unregistered_tokens == baseline
+
+
+def test_label_probs_reject_missing_registered_token_ids() -> None:
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.decision_token_id_to_label = {
+        10: "A",
+        20: "B",
+        30: "tie",
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="missing token IDs: \\[20\\]",
+    ):
+        judge._extract_label_probs(
+            {
+                10: _Logprob("A", -0.2),
+                30: _Logprob("T", -2.0),
+                40: _Logprob("B", 10.0),
+            }
+        )
 
 
 def test_deterministic_verdict_rejects_split_surface_token_mass_mismatch() -> None:

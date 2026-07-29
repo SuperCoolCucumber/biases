@@ -9,7 +9,10 @@ import biases.command_line as command_line
 from biases.command_line import build_parser
 from biases.schemas import BiasCondition, BiasType, VerdictLabel
 from biases.models import get_model_profile
-from biases.position_bias import JUDGE_OUTPUT_PARSER_VERSION
+from biases.position_bias import (
+    CONSTRAINED_LOGPROBS_MODE,
+    JUDGE_OUTPUT_PARSER_VERSION,
+)
 from biases.silent_bias_runner import (
     consistency_runs_for_condition,
     run_silent_bias_clean,
@@ -19,6 +22,7 @@ from biases.silent_bias_runner import (
 
 class _FakeJudge:
     model_name = "Qwen/Qwen3-4B"
+    logprobs_mode = CONSTRAINED_LOGPROBS_MODE
 
     def render_messages(self, messages: list[dict[str, str]]) -> str:
         return "\n".join(
@@ -89,6 +93,10 @@ class _UnavailableConfidenceJudge(_FakeJudge):
     ) -> list[tuple[VerdictLabel | None, str, float | None]]:
         del seed, max_tokens
         return [(None, self.raw_output, None) for _ in prompt_texts]
+
+
+class _RawLogprobsJudge(_FakeJudge):
+    logprobs_mode = "raw_logprobs"
 
 
 def _write_fixture(path: Path) -> None:
@@ -224,6 +232,7 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
         tuned_summary["judge_output_parser_version"]
         == JUDGE_OUTPUT_PARSER_VERSION
     )
+    assert tuned_summary["logprobs_mode"] == CONSTRAINED_LOGPROBS_MODE
     assert tuned_summary["verbalized_parse_status_counts"] == {
         "not_requested": 4
     }
@@ -257,6 +266,24 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
     assert {
         row["metadata"]["verbalized_parse_status"] for row in tuned_rows
     } == {"not_requested"}
+    assert {
+        (
+            row["spec"]["logprobs_mode"],
+            row["metadata"]["logprobs_mode"],
+        )
+        for row in tuned_rows
+    } == {
+        (
+            CONSTRAINED_LOGPROBS_MODE,
+            CONSTRAINED_LOGPROBS_MODE,
+        )
+    }
+    assert {
+        row["logprobs_mode"] for row in tuned_flat_rows
+    } == {CONSTRAINED_LOGPROBS_MODE}
+    assert {
+        row["logprobs_mode"] for row in tuned_pair_rows
+    } == {CONSTRAINED_LOGPROBS_MODE}
     assert {
         row["verbalized_parse_status"] for row in tuned_flat_rows
     } == {"not_requested"}
@@ -545,6 +572,54 @@ def test_resume_rejects_incompatible_existing_rows(tmp_path: Path) -> None:
             consistency_runs=0,
             include_verbalized_confidence=False,
             judge=judge,
+        )
+
+
+def test_runner_and_resume_require_processed_logprobs_mode(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+
+    with pytest.raises(ValueError, match="processed constrained log probabilities"):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            judge=_RawLogprobsJudge(),
+        )
+
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        judge=_FakeJudge(),
+    )
+    raw_path = Path(summary["raw_records_path"])
+    rows = _read_jsonl(raw_path)
+    rows[0]["spec"]["logprobs_mode"] = "raw_logprobs"
+    rows[0]["metadata"]["logprobs_mode"] = "raw_logprobs"
+    raw_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="spec_logprobs_mode.*metadata_logprobs_mode",
+    ):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            judge=_FakeJudge(),
         )
 
 
