@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from biases.dataset_splits import assign_routing_split
 from biases.paths import configure_artifact_environment, data_path
 
 configure_artifact_environment()
@@ -32,29 +33,7 @@ OUTPUT_COLUMNS = [
 ]
 
 
-def _assign_split(
-    df: pd.DataFrame,
-    *,
-    calibration_fraction: float,
-    seed: int,
-) -> pd.DataFrame:
-    if not 0 < calibration_fraction < 1:
-        raise ValueError("calibration_fraction must be between 0 and 1")
-
-    pieces: list[pd.DataFrame] = []
-    for _, group in df.groupby("winner", dropna=False, group_keys=False):
-        shuffled = group.sample(frac=1, random_state=seed).copy()
-        calibration_size = round(len(shuffled) * calibration_fraction)
-        calibration_size = min(max(calibration_size, 1), len(shuffled) - 1) if len(shuffled) > 1 else len(shuffled)
-        shuffled["routing_split"] = "test"
-        shuffled.iloc[:calibration_size, shuffled.columns.get_loc("routing_split")] = "calibration"
-        pieces.append(shuffled)
-
-    return (
-        pd.concat(pieces, ignore_index=True)
-        .sample(frac=1, random_state=seed)
-        .reset_index(drop=True)
-    )
+_assign_split = assign_routing_split
 
 
 def build_full_dataset_with_splits(
@@ -69,7 +48,11 @@ def build_full_dataset_with_splits(
     missing = [column for column in OUTPUT_COLUMNS if column != "routing_split" and column not in df.columns]
     if missing:
         raise ValueError(f"Dataset is missing expected columns: {missing}")
-    return _assign_split(df, calibration_fraction=calibration_fraction, seed=seed)[OUTPUT_COLUMNS]
+    return assign_routing_split(
+        df,
+        calibration_fraction=calibration_fraction,
+        seed=seed,
+    )[OUTPUT_COLUMNS]
 
 
 def parse_args() -> argparse.Namespace:

@@ -129,6 +129,77 @@ verbalized confidence, and consistency entropy to
 See `docs/codex_handoff.md` for a compact handoff summary for future Codex
 sessions.
 
+### Silent Bias 198-row pilot
+
+The paired Silent Bias pipeline runs clean judgments first, derives every
+social-cue target from those clean verdicts, and then analyzes the complete
+authority/bandwagon dose grid. Run the following sequence on a Python 3.12
+machine with a supported GPU:
+
+```bash
+export BIASES_ARTIFACT_ROOT=/path/to/biases-artifacts
+source scripts/artifact_env.sh
+uv sync --extra local --extra analysis --extra dev
+
+uv run python scripts/prepare_mtbench_stratified.py \
+  --target-size 200 \
+  --seed 42
+
+uv run python scripts/estimate_run_budget.py \
+  --examples 198 \
+  --models 1 \
+  --consistency-k 4 \
+  --consistency-schedule extremes
+
+uv run --extra local python scripts/validate_verdict_extraction.py \
+  --model-name qwen3-4b \
+  --data-path "$BIASES_ARTIFACT_ROOT/data/processed/mtbench_stratified_198.csv" \
+  --output-path "$BIASES_ARTIFACT_ROOT/outputs/silent_bias_pilot/verdict_extraction.json" \
+  --examples 20
+
+uv run --extra local biases run-silent-bias-clean \
+  --model-name qwen3-4b \
+  --data-path "$BIASES_ARTIFACT_ROOT/data/processed/mtbench_stratified_198.csv" \
+  --output-dir "$BIASES_ARTIFACT_ROOT/outputs/silent_bias_pilot/qwen3_4b" \
+  --dataset-split pilot \
+  --limit 198 \
+  --consistency-runs 4 \
+  --consistency-schedule extremes
+
+uv run --extra local biases run-silent-bias-cued \
+  --model-name qwen3-4b \
+  --data-path "$BIASES_ARTIFACT_ROOT/data/processed/mtbench_stratified_198.csv" \
+  --stage-a-summary "$BIASES_ARTIFACT_ROOT/outputs/silent_bias_pilot/qwen3_4b/silent_bias_stage_a_pair_summary.jsonl" \
+  --output-dir "$BIASES_ARTIFACT_ROOT/outputs/silent_bias_pilot/qwen3_4b" \
+  --dataset-split pilot \
+  --limit 198 \
+  --consistency-runs 4 \
+  --consistency-schedule extremes
+
+uv run --extra analysis python scripts/analyze_silent_bias.py \
+  --stage-a "$BIASES_ARTIFACT_ROOT/outputs/silent_bias_pilot/qwen3_4b/silent_bias_stage_a_uncertainty_scores.jsonl" \
+  --stage-b "$BIASES_ARTIFACT_ROOT/outputs/silent_bias_pilot/qwen3_4b/silent_bias_stage_b_uncertainty_scores.jsonl" \
+  --output-dir "$BIASES_ARTIFACT_ROOT/outputs/analysis/silent_bias_pilot_qwen3_4b" \
+  --bootstrap-resamples 2000 \
+  --trend-permutations 10000 \
+  --seed 42
+
+uv run --extra analysis python scripts/make_paper_assets.py \
+  --analysis-dir "$BIASES_ARTIFACT_ROOT/outputs/analysis/silent_bias_pilot_qwen3_4b" \
+  --output-dir "$BIASES_ARTIFACT_ROOT/outputs/analysis/silent_bias_pilot_qwen3_4b/paper_assets" \
+  --report-path "$BIASES_ARTIFACT_ROOT/outputs/analysis/silent_bias_pilot_qwen3_4b/paper_results.md"
+```
+
+`--target-size 200` deterministically yields 198 rows because the sample is
+balanced across six winner-by-routing strata. The reduced pilot still performs
+logit and verbalized-confidence passes for every condition; consistency is
+sampled at clean and boundary doses only. This exact plan has 34 conditions per
+example and 27,720 short generations for one model. See
+`docs/experiment_plan.md` for the preregistered decision rules and
+`src/biases/analysis/README.md` for output schemas. Preliminary pilot findings
+and their limitations are summarized in
+`reports/preliminary_silent_bias_pilot.md`.
+
 ### 2. Create experiment objects in Python
 
 The main objects are `Candidate`, `JudgeExample`, `BiasCondition`,

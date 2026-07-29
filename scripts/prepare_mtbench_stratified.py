@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from biases.dataset_splits import assign_routing_split
 from biases.paths import configure_artifact_environment, data_path
 
 configure_artifact_environment()
@@ -16,6 +17,7 @@ DEFAULT_DATASET_NAME = "lmsys/mt_bench_human_judgments"
 DEFAULT_SPLIT = "human"
 DEFAULT_TARGET_SIZE = 200
 DEFAULT_SEED = 42
+DEFAULT_CALIBRATION_FRACTION = 0.5
 
 OUTPUT_COLUMNS = [
     "question_id",
@@ -25,6 +27,7 @@ OUTPUT_COLUMNS = [
     "turn",
     "conversation_a",
     "conversation_b",
+    "routing_split",
 ]
 
 
@@ -34,18 +37,59 @@ def build_stratified_sample(
     split: str,
     target_size: int,
     seed: int,
+    calibration_fraction: float = DEFAULT_CALIBRATION_FRACTION,
 ) -> pd.DataFrame:
     dataset = load_dataset(dataset_name)
     df = pd.DataFrame(dataset[split])
+    return stratified_sample_from_frame(
+        df,
+        target_size=target_size,
+        seed=seed,
+        calibration_fraction=calibration_fraction,
+    )
 
-    labels = sorted(df["winner"].dropna().unique())
-    samples_per_label = target_size // len(labels)
-    if samples_per_label < 1:
-        raise ValueError("target_size is too small for the number of winner labels")
+
+def stratified_sample_from_frame(
+    frame: pd.DataFrame,
+    *,
+    target_size: int,
+    seed: int,
+    calibration_fraction: float = DEFAULT_CALIBRATION_FRACTION,
+) -> pd.DataFrame:
+    """Sample evenly by winner and inherited calibration/test routing."""
+
+    indexed = frame.reset_index(drop=True).copy()
+    indexed["_source_row_index"] = range(len(indexed))
+    routed = assign_routing_split(
+        indexed,
+        calibration_fraction=calibration_fraction,
+        seed=seed,
+    )
+    strata = sorted(
+        {
+            (str(winner), str(routing_split))
+            for winner, routing_split in zip(
+                routed["winner"],
+                routed["routing_split"],
+                strict=True,
+            )
+        }
+    )
+    samples_per_stratum = target_size // len(strata)
+    if samples_per_stratum < 1:
+        raise ValueError("target_size is too small for the winner/routing strata")
 
     sampled = (
-        df.groupby("winner", group_keys=False)[df.columns]
-        .apply(lambda group: group.sample(n=samples_per_label, random_state=seed))
+        routed.groupby(
+            ["winner", "routing_split"],
+            group_keys=False,
+        )[routed.columns]
+        .apply(
+            lambda group: group.sample(
+                n=samples_per_stratum,
+                random_state=seed,
+            )
+        )
         .reset_index(drop=True)
     )
 
@@ -60,6 +104,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default=DEFAULT_SPLIT)
     parser.add_argument("--target-size", type=int, default=DEFAULT_TARGET_SIZE)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument(
+        "--calibration-fraction",
+        type=float,
+        default=DEFAULT_CALIBRATION_FRACTION,
+    )
     parser.add_argument("--output-path", type=Path, default=DEFAULT_OUTPUT_PATH)
     return parser.parse_args()
 
@@ -71,6 +120,7 @@ def main() -> None:
         split=args.split,
         target_size=args.target_size,
         seed=args.seed,
+        calibration_fraction=args.calibration_fraction,
     )
 
     args.output_path.parent.mkdir(parents=True, exist_ok=True)

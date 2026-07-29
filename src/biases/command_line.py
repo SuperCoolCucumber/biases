@@ -31,6 +31,10 @@ from biases.schemas import (
     UncertaintyBundle,
     VerdictLabel,
 )
+from biases.silent_bias_runner import (
+    run_silent_bias_clean,
+    run_silent_bias_cued,
+)
 from biases.utils import stable_hash
 
 
@@ -228,6 +232,78 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory where run artifacts will be written.",
     )
     _add_common_vllm_args(label_prior_parser)
+
+    silent_clean_parser = subparsers.add_parser(
+        "run-silent-bias-clean",
+        help="Run Stage A clean judgments in both AB and BA orderings.",
+    )
+    silent_clean_parser.add_argument(
+        "--output-dir",
+        default=str(output_path("silent_bias_qwen3_4b")),
+        help="Directory where Stage A and Stage B artifacts will be written.",
+    )
+    _add_common_vllm_args(silent_clean_parser)
+    silent_clean_parser.set_defaults(
+        model_name="qwen3-4b",
+        consistency_runs=8,
+        dataset_split="pilot",
+    )
+    silent_clean_parser.add_argument(
+        "--consistency-schedule",
+        choices=("all", "extremes"),
+        default="all",
+        help="Run consistency on all conditions or only clean/boundary doses.",
+    )
+    silent_clean_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Maximum prompt conditions submitted to vLLM together.",
+    )
+    silent_clean_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Refuse to reuse an existing Stage A run-record file.",
+    )
+
+    silent_cued_parser = subparsers.add_parser(
+        "run-silent-bias-cued",
+        help="Generate Stage B from Stage A summaries and run the cued dose grid.",
+    )
+    silent_cued_parser.add_argument(
+        "--stage-a-summary",
+        type=Path,
+        required=True,
+        help="Stage A pair-summary JSONL used to derive cue directions.",
+    )
+    silent_cued_parser.add_argument(
+        "--output-dir",
+        default=str(output_path("silent_bias_qwen3_4b")),
+        help="Directory where Stage A and Stage B artifacts will be written.",
+    )
+    _add_common_vllm_args(silent_cued_parser)
+    silent_cued_parser.set_defaults(
+        model_name="qwen3-4b",
+        consistency_runs=8,
+        dataset_split="pilot",
+    )
+    silent_cued_parser.add_argument(
+        "--consistency-schedule",
+        choices=("all", "extremes"),
+        default="all",
+        help="Run consistency on all conditions or only clean/boundary doses.",
+    )
+    silent_cued_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Maximum prompt conditions submitted to vLLM together.",
+    )
+    silent_cued_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Refuse to reuse an existing Stage B run-record file.",
+    )
     return parser
 
 
@@ -316,6 +392,49 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_model_len=args.max_model_len,
             gpu_memory_utilization=args.gpu_memory_utilization,
             dtype=args.dtype,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "run-silent-bias-clean":
+        summary = run_silent_bias_clean(
+            csv_path=Path(args.data_path),
+            output_dir=Path(args.output_dir),
+            model_name=args.model_name,
+            dataset_split=args.dataset_split,
+            limit=args.limit,
+            consistency_runs=args.consistency_runs,
+            sampling_temperature=args.sampling_temperature,
+            consistency_schedule=args.consistency_schedule,
+            tensor_parallel_size=args.tensor_parallel_size,
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            dtype=args.dtype,
+            include_verbalized_confidence=not args.skip_verbalized_confidence,
+            batch_size=args.batch_size,
+            resume=not args.no_resume,
+        )
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    if args.command == "run-silent-bias-cued":
+        summary = run_silent_bias_cued(
+            csv_path=Path(args.data_path),
+            stage_a_summary_path=args.stage_a_summary,
+            output_dir=Path(args.output_dir),
+            model_name=args.model_name,
+            dataset_split=args.dataset_split,
+            limit=args.limit,
+            consistency_runs=args.consistency_runs,
+            sampling_temperature=args.sampling_temperature,
+            consistency_schedule=args.consistency_schedule,
+            tensor_parallel_size=args.tensor_parallel_size,
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            dtype=args.dtype,
+            include_verbalized_confidence=not args.skip_verbalized_confidence,
+            batch_size=args.batch_size,
+            resume=not args.no_resume,
         )
         print(json.dumps(summary, indent=2))
         return 0

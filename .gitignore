@@ -31,6 +31,7 @@ checkpoints/
 models/
 wandb/
 mlruns/
+reports/paper_results.md
 
 # Local Slurm launchers rendered for a specific scheduler.
 slurm/*.slurm

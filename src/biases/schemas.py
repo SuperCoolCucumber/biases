@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import Enum
 from math import log2
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class BiasType(str, Enum):
+    CLEAN = "clean"
     POSITION = "position"
     AUTHORITY = "authority"
     BANDWAGON = "bandwagon"
@@ -19,6 +20,18 @@ class CueCongruency(str, Enum):
     CONTROL = "control"
     CONGRUENT = "congruent"
     INCONGRUENT = "incongruent"
+    NONE = "none"
+
+
+class PairOrdering(str, Enum):
+    AB = "ab"
+    BA = "ba"
+
+
+class HumanCueDirection(str, Enum):
+    TOWARD_HUMAN = "toward_human"
+    AGAINST_HUMAN = "against_human"
+    HUMAN_TIE = "human_tie"
     NONE = "none"
 
 
@@ -67,6 +80,11 @@ class BiasCondition(BaseModel):
     cue_target: VerdictLabel | None = None
     cue_congruency: CueCongruency = CueCongruency.NONE
     cue_text: str | None = None
+    ordering: PairOrdering | None = None
+    dose: int | None = None
+    direction_relative_human: HumanCueDirection | None = None
+    clean_tie: bool | None = None
+    clean_record_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -150,6 +168,7 @@ class ConsistencyMetrics(BaseModel):
     unique_verdict_count: int
     flip_rate: float
     verdict_counts: dict[str, int] = Field(default_factory=dict)
+    majority_verdict: VerdictLabel | None = None
 
 
 class UncertaintyBundle(BaseModel):
@@ -168,6 +187,7 @@ class ExperimentSpec(BaseModel):
     uncertainty_methods: list[str]
     consistency_runs: int
     temperature: float
+    consistency_schedule: Literal["all", "extremes"] | None = None
 
 
 class RunRecord(BaseModel):
@@ -185,6 +205,11 @@ class RunRecord(BaseModel):
     prompt_hash: str
     uncertainty: UncertaintyBundle
     raw_prompt_logprobs: dict[str, float] | None = None
+    pair_key: str | None = None
+    condition_group_id: str | None = None
+    ordering_twin_key: str | None = None
+    spec_hash: str | None = None
+    input_file_hash: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

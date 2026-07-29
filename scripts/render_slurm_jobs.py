@@ -6,6 +6,12 @@ from pathlib import Path
 
 
 DEFAULT_ARTIFACT_ROOT_EXPR = "${REPO_DIR}/artifacts"
+SILENT_BIAS_TEMPLATE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "slurm"
+    / "templates"
+    / "silent_bias_job.slurm"
+)
 
 
 @dataclass(frozen=True)
@@ -26,13 +32,30 @@ MODEL_SPECS = {
     "qwen35_27b": ModelSpec("qwen35_27b", "Qwen/Qwen3.5-27B", 2, "220G", 2, gpu_memory_utilization=0.92),
     "qwen3_14b": ModelSpec("qwen3_14b", "Qwen/Qwen3-14B", 1, "160G", 1),
     "qwen3_32b": ModelSpec("qwen3_32b", "Qwen/Qwen3-32B", 2, "240G", 2),
+    "qwen3_4b": ModelSpec("qwen3_4b", "Qwen/Qwen3-4B", 1, "64G", 1),
     "mistral7b": ModelSpec("mistral7b", "mistralai/Mistral-7B-Instruct-v0.3", 1, "128G", 1),
+    "gemma2_9b": ModelSpec(
+        "gemma2_9b",
+        "google/gemma-2-9b-it",
+        1,
+        "96G",
+        1,
+        enforce_eager=True,
+    ),
     "gemma2_27b": ModelSpec(
         "gemma2_27b",
         "google/gemma-2-27b-it",
         2,
         "240G",
         2,
+        enforce_eager=True,
+    ),
+    "gemma3_12b": ModelSpec(
+        "gemma3_12b",
+        "google/gemma-3-12b-it",
+        1,
+        "128G",
+        1,
         enforce_eager=True,
     ),
     "skywork_critic_8b": ModelSpec(
@@ -60,6 +83,22 @@ CONTROL_COMMANDS = {
 
 def _optional_sbatch_line(flag: str, value: str | None) -> str:
     return "" if value is None else f"#SBATCH {flag} {value}\n"
+
+
+def _optional_scheduler_block(
+    *,
+    partition: str | None,
+    qos: str | None,
+    account: str | None,
+) -> str:
+    lines: list[str] = []
+    if partition is not None:
+        lines.append(f"#SBATCH --partition={partition}")
+    if qos is not None:
+        lines.append(f"#SBATCH --qos={qos}")
+    if account is not None:
+        lines.append(f"#SBATCH --account={account}")
+    return "".join(f"{line}\n" for line in lines)
 
 
 def render_job(
@@ -170,10 +209,94 @@ python main.py {command} \\
 """
 
 
+def render_silent_bias_job(
+    *,
+    stage: str,
+    job_name: str,
+    model: ModelSpec,
+    data_file: str,
+    time: str,
+    cpus_per_task: int,
+    gpus: int,
+    mem: str,
+    partition: str | None,
+    qos: str | None,
+    account: str | None,
+    artifact_root: str,
+    consistency_runs: int,
+    consistency_schedule: str,
+    sampling_temperature: float,
+    include_verbalized_confidence: bool,
+    limit: int | None,
+    stage_a_command: str,
+    stage_b_command: str,
+    stage_a_summary_file: str,
+    max_model_len: int,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    dtype: str,
+) -> str:
+    """Render one portable Stage A or Stage B Silent Bias job."""
+
+    normalized_stage = stage.upper()
+    if normalized_stage not in {"A", "B"}:
+        raise ValueError("stage must be A or B")
+    if consistency_runs < 0:
+        raise ValueError("consistency_runs must be non-negative")
+    if consistency_schedule not in {"all", "extremes"}:
+        raise ValueError("consistency_schedule must be 'all' or 'extremes'")
+    if cpus_per_task < 1 or gpus < 1 or tensor_parallel_size < 1:
+        raise ValueError("CPU, GPU, and tensor-parallel counts must be positive")
+
+    template = SILENT_BIAS_TEMPLATE_PATH.read_text(encoding="utf-8")
+    replacements = {
+        "@@JOB_NAME@@": job_name,
+        "@@CPUS_PER_TASK@@": str(cpus_per_task),
+        "@@GPUS@@": str(gpus),
+        "@@MEM@@": mem,
+        "@@TIME@@": time,
+        "@@OPTIONAL_SBATCH@@": _optional_scheduler_block(
+            partition=partition,
+            qos=qos,
+            account=account,
+        ),
+        "@@ARTIFACT_ROOT@@": artifact_root,
+        "@@STAGE@@": normalized_stage,
+        "@@DATA_FILE@@": data_file,
+        "@@MODEL_NAME@@": model.model_name,
+        "@@MODEL_SLUG@@": model.slug,
+        "@@STAGE_A_COMMAND@@": stage_a_command,
+        "@@STAGE_B_COMMAND@@": stage_b_command,
+        "@@CONSISTENCY_RUNS@@": str(consistency_runs),
+        "@@CONSISTENCY_SCHEDULE@@": consistency_schedule,
+        "@@SAMPLING_TEMPERATURE@@": str(sampling_temperature),
+        "@@INCLUDE_VERBALIZED@@": (
+            "1" if include_verbalized_confidence else "0"
+        ),
+        "@@LIMIT@@": "" if limit is None else str(limit),
+        "@@TENSOR_PARALLEL_SIZE@@": str(tensor_parallel_size),
+        "@@MAX_MODEL_LEN@@": str(max_model_len),
+        "@@GPU_MEMORY_UTILIZATION@@": str(gpu_memory_utilization),
+        "@@DTYPE@@": dtype,
+        "@@ENFORCE_EAGER@@": "1" if model.enforce_eager else "0",
+        "@@STAGE_A_SUMMARY_FILE@@": stage_a_summary_file,
+    }
+    rendered = template
+    for marker, value in replacements.items():
+        rendered = rendered.replace(marker, value)
+    if "@@" in rendered:
+        raise ValueError("unresolved placeholder in Silent Bias Slurm template")
+    return rendered
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render portable Slurm jobs.")
     parser.add_argument("--output-dir", type=Path, default=Path("slurm/generated"))
-    parser.add_argument("--kind", choices=["controls", "phase3"], required=True)
+    parser.add_argument(
+        "--kind",
+        choices=["controls", "phase3", "silent-bias"],
+        required=True,
+    )
     parser.add_argument("--partition", default=None, help="Optional Slurm partition.")
     parser.add_argument("--qos", default=None, help="Optional Slurm QOS.")
     parser.add_argument("--account", default=None, help="Optional Slurm account.")
@@ -181,6 +304,68 @@ def parse_args() -> argparse.Namespace:
         "--artifact-root",
         default=DEFAULT_ARTIFACT_ROOT_EXPR,
         help="Default BIASES_ARTIFACT_ROOT expression to render into jobs.",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=sorted(MODEL_SPECS),
+        default=None,
+        help=(
+            "Model keys for --kind silent-bias. Defaults to qwen3_14b; "
+            "repeat values to render multiple model families."
+        ),
+    )
+    parser.add_argument("--data-file", default="mtbench_full.csv")
+    parser.add_argument("--time", default="48:00:00")
+    parser.add_argument("--cpus-per-task", type=int, default=16)
+    parser.add_argument(
+        "--gpus",
+        type=int,
+        default=None,
+        help="Override each selected model template's GPU count.",
+    )
+    parser.add_argument(
+        "--mem",
+        default=None,
+        help="Override each selected model template's memory request.",
+    )
+    parser.add_argument("--max-model-len", type=int, default=8192)
+    parser.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=None,
+        help="Override each selected model template's tensor-parallel size.",
+    )
+    parser.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        default=None,
+    )
+    parser.add_argument("--dtype", default=None)
+    parser.add_argument("--consistency-runs", type=int, default=8)
+    parser.add_argument(
+        "--consistency-schedule",
+        choices=["all", "extremes"],
+        default="all",
+    )
+    parser.add_argument("--sampling-temperature", type=float, default=0.7)
+    parser.add_argument("--skip-verbalized-confidence", action="store_true")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--stage-a-command",
+        default="run-silent-bias-clean",
+    )
+    parser.add_argument(
+        "--stage-b-command",
+        default="run-silent-bias-cued",
+    )
+    parser.add_argument(
+        "--stage-a-summary-file",
+        default="silent_bias_stage_a_pair_summary.jsonl",
+        help=(
+            "Filename written under STAGE_A_OUTPUT_DIR and passed to Stage B. "
+            "STAGE_A_SUMMARY can override the full path at submission time."
+        ),
     )
     return parser.parse_args()
 
@@ -211,7 +396,7 @@ def main() -> None:
                     encoding="utf-8",
                 )
                 rendered.append(path)
-    else:
+    elif args.kind == "phase3":
         for model_key in ("mistral7b", "gemma2_27b", "skywork_critic_8b"):
             model = MODEL_SPECS[model_key]
             for bias, command in BIAS_COMMANDS.items():
@@ -228,6 +413,56 @@ def main() -> None:
                         qos=args.qos,
                         account=args.account,
                         artifact_root=args.artifact_root,
+                    ),
+                    encoding="utf-8",
+                )
+                rendered.append(path)
+    else:
+        model_keys = args.models or ["qwen3_14b"]
+        for model_key in model_keys:
+            model = MODEL_SPECS[model_key]
+            for stage in ("A", "B"):
+                stage_slug = f"stage_{stage.lower()}"
+                path = (
+                    args.output_dir
+                    / f"silent_bias_{stage_slug}_{model.slug}.slurm"
+                )
+                path.write_text(
+                    render_silent_bias_job(
+                        stage=stage,
+                        job_name=f"silent-{stage.lower()}-{model.slug}",
+                        model=model,
+                        data_file=args.data_file,
+                        time=args.time,
+                        cpus_per_task=args.cpus_per_task,
+                        gpus=args.gpus if args.gpus is not None else model.gpus,
+                        mem=args.mem or model.mem,
+                        partition=args.partition,
+                        qos=args.qos,
+                        account=args.account,
+                        artifact_root=args.artifact_root,
+                        consistency_runs=args.consistency_runs,
+                        consistency_schedule=args.consistency_schedule,
+                        sampling_temperature=args.sampling_temperature,
+                        include_verbalized_confidence=(
+                            not args.skip_verbalized_confidence
+                        ),
+                        limit=args.limit,
+                        stage_a_command=args.stage_a_command,
+                        stage_b_command=args.stage_b_command,
+                        stage_a_summary_file=args.stage_a_summary_file,
+                        max_model_len=args.max_model_len,
+                        tensor_parallel_size=(
+                            args.tensor_parallel_size
+                            if args.tensor_parallel_size is not None
+                            else model.tensor_parallel_size
+                        ),
+                        gpu_memory_utilization=(
+                            args.gpu_memory_utilization
+                            if args.gpu_memory_utilization is not None
+                            else model.gpu_memory_utilization
+                        ),
+                        dtype=args.dtype or model.dtype,
                     ),
                     encoding="utf-8",
                 )

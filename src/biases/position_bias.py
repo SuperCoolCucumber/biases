@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from biases.models import get_model_profile
 from biases.paths import configure_artifact_environment, data_path
 from biases.position_prompts import build_position_prompt_package
 from biases.schemas import (
@@ -349,6 +350,7 @@ def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[Positi
 
             base_metadata = {
                 "pair_id": pair_id,
+                "question_cluster_id": base_id,
                 "source_csv": str(csv_path),
                 "source_row_index": index,
                 "turn": turn_value or None,
@@ -432,7 +434,7 @@ def _normalize_probs(probs: dict[str, float]) -> dict[str, float]:
     return {label: value / total for label, value in probs.items()}
 
 
-class QwenJudge:
+class VLLMJudge:
     def __init__(
         self,
         model_name: str,
@@ -446,13 +448,15 @@ class QwenJudge:
                 "vLLM execution requires the 'local' extra. Install with `uv sync --extra local`."
             )
 
-        self.model_name = model_name
+        self.profile = get_model_profile(model_name)
+        self.model_name = self.profile.hf_model_name
+        self.require_label_logprobs = True
         disable_custom_all_reduce = os.environ.get("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "").lower()
         disable_custom_all_reduce = disable_custom_all_reduce in {"1", "true", "yes", "on"}
         enforce_eager = os.environ.get("BIASES_VLLM_ENFORCE_EAGER", "").lower()
         enforce_eager = enforce_eager in {"1", "true", "yes", "on"}
         self.model = LLM(
-            model=model_name,
+            model=self.model_name,
             tensor_parallel_size=tensor_parallel_size,
             max_model_len=max_model_len,
             trust_remote_code=True,
@@ -468,14 +472,13 @@ class QwenJudge:
         ) = self._build_decision_label_token_maps()
 
     def _prepare_prompt(self, prompt_text: str) -> str:
-        if "qwen3" not in self.model_name.lower():
-            return prompt_text
+        profile = getattr(self, "profile", None)
+        if profile is None:
+            profile = get_model_profile(self.model_name)
+        return profile.prepare_legacy_prompt(prompt_text)
 
-        assistant_prefix = "<|im_start|>assistant\n"
-        non_thinking_prefix = "<think>\n\n</think>\n\n"
-        if not prompt_text.endswith(assistant_prefix):
-            return prompt_text
-        return f"{prompt_text}{non_thinking_prefix}"
+    def render_messages(self, messages: list[dict[str, str]]) -> str:
+        return self.profile.render_prompt(self.tokenizer, messages)
 
     def _get_tokenizer(self) -> Any:
         if hasattr(self.model, "get_tokenizer"):
@@ -493,11 +496,7 @@ class QwenJudge:
         return int(token_ids[0])
 
     def _build_decision_label_token_maps(self) -> tuple[dict[str, list[int]], dict[int, str]]:
-        label_texts = {
-            "A": ("A", " A"),
-            "B": ("B", " B"),
-            "tie": ("T", " T"),
-        }
+        label_texts = self.profile.verdict_token_texts
         label_to_ids: dict[str, list[int]] = {}
         token_id_to_label: dict[int, str] = {}
         for label, texts in label_texts.items():
@@ -620,6 +619,11 @@ class QwenJudge:
         if verdict is None:
             raise ValueError(f"Could not parse judge output {completion.text!r}")
 
+        if not probs and getattr(self, "require_label_logprobs", True):
+            raise RuntimeError(
+                "vLLM did not return constrained first-token log probabilities; "
+                "refusing to fabricate a one-hot uncertainty distribution."
+            )
         if not probs:
             probs = {
                 "A": 1.0 if verdict == VerdictLabel.A else 0.0,
@@ -627,6 +631,51 @@ class QwenJudge:
                 "tie": 1.0 if verdict == VerdictLabel.TIE else 0.0,
             }
         return verdict, raw_text, _normalize_probs(probs)
+
+    def choose_verdict_batch(
+        self,
+        prompt_texts: list[str],
+        seed: int,
+        sampling_temperature: float,
+    ) -> list[tuple[VerdictLabel, str, dict[str, float]]]:
+        if not prompt_texts:
+            return []
+        allowed_token_ids = self.decision_allowed_token_ids
+        sampling_params = SamplingParams(
+            max_tokens=1,
+            temperature=sampling_temperature,
+            top_p=1.0,
+            seed=seed,
+            logprobs=len(allowed_token_ids),
+            allowed_token_ids=allowed_token_ids,
+            skip_special_tokens=True,
+        )
+        prepared = [self._prepare_prompt(prompt) for prompt in prompt_texts]
+        outputs = self.model.generate(prepared, sampling_params, use_tqdm=False)
+        results: list[tuple[VerdictLabel, str, dict[str, float]]] = []
+        for output in outputs:
+            completion = output.outputs[0]
+            raw_text = completion.text
+            probs = self._extract_label_probs(
+                completion.logprobs[0] if completion.logprobs else None
+            )
+            verdict = self._parse_verdict_text(raw_text)
+            if verdict is None and probs:
+                winner = max(probs, key=probs.get)
+                verdict = {
+                    "A": VerdictLabel.A,
+                    "B": VerdictLabel.B,
+                    "tie": VerdictLabel.TIE,
+                }[winner]
+            if verdict is None:
+                raise ValueError(f"Could not parse judge output {raw_text!r}")
+            if not probs:
+                raise RuntimeError(
+                    "vLLM did not return constrained first-token log probabilities; "
+                    "the uncertainty channel is invalid."
+                )
+            results.append((verdict, raw_text, _normalize_probs(probs)))
+        return results
 
     def verbalize_confidence(
         self,
@@ -639,7 +688,7 @@ class QwenJudge:
             temperature=0.0,
             top_p=1.0,
             seed=seed,
-            stop=["<|im_end|>"],
+            stop=list(self.profile.stop_token_texts) or None,
             skip_special_tokens=True,
         )
         prompt_text = self._prepare_prompt(prompt_text)
@@ -651,11 +700,52 @@ class QwenJudge:
             self._parse_confidence(raw_text),
         )
 
+    def verbalize_confidence_batch(
+        self,
+        prompt_texts: list[str],
+        seed: int = 0,
+        max_tokens: int = 24,
+    ) -> list[tuple[VerdictLabel | None, str, float | None]]:
+        if not prompt_texts:
+            return []
+        sampling_params = SamplingParams(
+            max_tokens=max_tokens,
+            temperature=0.0,
+            top_p=1.0,
+            seed=seed,
+            stop=list(self.profile.stop_token_texts) or None,
+            skip_special_tokens=True,
+        )
+        prepared = [self._prepare_prompt(prompt) for prompt in prompt_texts]
+        outputs = self.model.generate(prepared, sampling_params, use_tqdm=False)
+        return [
+            (
+                self._parse_verdict_text(output.outputs[0].text.strip()),
+                output.outputs[0].text.strip(),
+                self._parse_confidence(output.outputs[0].text.strip()),
+            )
+            for output in outputs
+        ]
+
+
+QwenJudge = VLLMJudge
+
 
 def _compute_consistency(verdicts: list[VerdictLabel], anchor: VerdictLabel) -> ConsistencyMetrics:
+    if not verdicts:
+        raise ValueError("At least one verdict is required for consistency metrics")
     counts = Counter(verdicts)
     total = len(verdicts)
-    agreement = max(counts.values()) / total
+    modal_count = max(counts.values())
+    modal_verdicts = {
+        verdict for verdict, count in counts.items() if count == modal_count
+    }
+    majority_verdict = (
+        anchor
+        if anchor in modal_verdicts
+        else min(modal_verdicts, key=lambda verdict: verdict.value)
+    )
+    agreement = modal_count / total
     vote_entropy = 0.0
     for count in counts.values():
         prob = count / total
@@ -668,6 +758,7 @@ def _compute_consistency(verdicts: list[VerdictLabel], anchor: VerdictLabel) -> 
         unique_verdict_count=len(counts),
         flip_rate=flips,
         verdict_counts={_label_to_str(verdict) or "unknown": count for verdict, count in counts.items()},
+        majority_verdict=majority_verdict,
     )
 
 
@@ -695,25 +786,33 @@ def _build_run_record(
     verbalized_raw_output: str | None = None,
     verbalized_prompt_hash: str | None = None,
     consistency: ConsistencyMetrics | None = None,
+    pair_key: str | None = None,
+    condition_group_id: str | None = None,
+    ordering_twin_key: str | None = None,
+    spec_hash: str | None = None,
+    input_file_hash: str | None = None,
 ) -> RunRecord:
     uncertainty = UncertaintyBundle(
         logit=LogitMetrics.from_probs(label_probs),
         verbalized=VerbalizedMetrics.from_confidence(verbalized_confidence),
         consistency=consistency,
     )
+    record_identity = {
+        "example_id": example.example_id,
+        "model_name": spec.model_name,
+        "variant_id": condition.variant_id,
+        "seed": seed,
+        "prompt_hash": prompt_hash,
+    }
+    if pair_key is not None:
+        record_identity["pair_key"] = pair_key
     return RunRecord(
-        record_id=stable_hash(
-            {
-                "example_id": example.example_id,
-                "model_name": spec.model_name,
-                "variant_id": condition.variant_id,
-                "seed": seed,
-                "prompt_hash": prompt_hash,
-            }
-        ),
+        record_id=stable_hash(record_identity),
         spec=spec,
         example_id=example.example_id,
-        question_id=str(example.question_id),
+        question_id=str(
+            example.metadata.get("question_cluster_id") or example.question_id
+        ),
         condition=condition,
         seed=seed,
         verdict=verdict,
@@ -721,10 +820,21 @@ def _build_run_record(
         prompt_hash=prompt_hash,
         uncertainty=uncertainty,
         raw_prompt_logprobs=label_probs,
+        pair_key=pair_key,
+        condition_group_id=condition_group_id,
+        ordering_twin_key=ordering_twin_key,
+        spec_hash=spec_hash,
+        input_file_hash=input_file_hash,
         metadata={
             "pair_id": example.metadata.get("pair_id"),
             "routing_split": example.metadata.get("routing_split"),
             "variant_id": condition.variant_id,
+            "human_winner": _label_to_str(example.human_winner),
+            "ordering": condition.ordering,
+            "dose": condition.dose,
+            "direction_relative_human": condition.direction_relative_human,
+            "clean_tie": condition.clean_tie,
+            "clean_record_id": condition.clean_record_id,
             "underlying_response_id": _underlying_response_id(example, verdict),
             "prompt_preview": prompt_text[:200],
             "decision_token_index": 0,
@@ -772,7 +882,11 @@ def _judge_example_condition(
             sampling_temperature=sampling_temperature,
         )
         consistency_verdicts.append(sampled_verdict)
-    consistency = _compute_consistency(consistency_verdicts, anchor=verdict)
+    consistency = (
+        _compute_consistency(consistency_verdicts, anchor=verdict)
+        if consistency_verdicts
+        else None
+    )
 
     return _build_run_record(
         example=example,
@@ -806,10 +920,22 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         "example_id": record.example_id,
         "question_id": record.question_id,
         "pair_id": record.metadata.get("pair_id"),
+        "pair_identity_key": record.metadata.get("pair_identity_key"),
+        "pair_key": record.pair_key,
+        "condition_group_id": record.condition_group_id,
+        "ordering_twin_key": record.ordering_twin_key,
+        "spec_hash": record.spec_hash,
+        "input_file_hash": record.input_file_hash,
         "routing_split": record.metadata.get("routing_split"),
         "variant_id": record.condition.variant_id,
+        "ordering": record.condition.ordering,
+        "dose": record.condition.dose,
         "cue_congruency": record.condition.cue_congruency,
+        "direction_relative_human": record.condition.direction_relative_human,
         "cue_target": record.condition.cue_target,
+        "clean_tie": record.condition.clean_tie,
+        "clean_record_id": record.condition.clean_record_id,
+        "human_winner": record.metadata.get("human_winner"),
         "verdict": record.verdict,
         "underlying_response_id": record.metadata.get("underlying_response_id"),
         "label_prob_A": label_probs.get("A"),
@@ -826,6 +952,9 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         "consistency_unique_verdict_count": consistency.unique_verdict_count if consistency else None,
         "consistency_flip_rate": consistency.flip_rate if consistency else None,
         "consistency_verdict_counts": consistency.verdict_counts if consistency else None,
+        "consistency_majority_verdict": (
+            consistency.majority_verdict if consistency else None
+        ),
         "decision_token_index": record.metadata.get("decision_token_index"),
         "decision_token_labels": record.metadata.get("decision_token_labels"),
     }
