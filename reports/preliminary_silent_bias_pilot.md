@@ -51,7 +51,7 @@ history solely for debugging and auditability.
 - The affected run used malformed conversation interpretation and is invalid
   for behavioral conclusions.
 - The required replacement matrix contains four independently gated judges:
-  Qwen3-4B, Qwen3-14B, Phi-4-14B, and Hermes3-Llama3.1-8B. Skywork
+  Qwen3-4B, Qwen3-14B, OLMo3-7B-Instruct, and Hermes3-Llama3.1-8B. Skywork
   remains optional. These runs remain a stratified pilot rather than full
   MT-Bench.
 - The prescribed row-level routing split places 41 of 75 question clusters
@@ -73,7 +73,15 @@ history solely for debugging and auditability.
   examples, but failed the independently preregistered native verdict contract:
   18/20 examples both started with a declared verdict token and agreed with the
   constrained verdict, below the 99% gate. The failed smoke is retained as an
-  exclusion artifact; Phi-4-14B is the public third-family replacement.
+  exclusion artifact.
+- Phi-4-14B also passed constrained extraction on 20/20 examples but failed
+  the native contract and agreement gate on 14 examples: only 6/20 passed.
+  Its failed smoke is retained as an exclusion artifact without weakening the
+  99% requirement.
+- OLMo3-7B-Instruct is the public third-family replacement, pinned to revision
+  `6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only canonical
+  string-transport and registered A/B/T token probes passed; its 20-example
+  constrained and native GPU smoke is still pending.
 
 ## Reproducibility
 

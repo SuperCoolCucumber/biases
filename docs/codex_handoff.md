@@ -260,24 +260,38 @@ Verification after this correction: 244 tests passed under Python 3.12,
 changed Python files compiled, `git diff --check` passed, and the campaign
 wrapper passed `bash -n`.
 
-## 2026-07-30 OLMo Gate Failure and Phi-4 Substitution
+## 2026-07-30 OLMo2 and Phi-4 Gate Failures; OLMo3 Substitution
 
 OLMo2-7B passed constrained extraction with complete
 `processed_logprobs` coverage on 20/20 smoke examples, but failed the
 independent native verdict gate. Only 18/20 examples both began with a
 registered verdict token and agreed with the constrained verdict, below the
 predeclared 99% minimum. Preserve the failed smoke artifact and do not run an
-OLMo pilot or weaken the gate.
+OLMo2 pilot or weaken the gate.
 
-The replacement required matrix is Qwen3-4B, Qwen3-14B, Phi-4-14B, and
-Hermes-3-Llama-3.1-8B, spanning Qwen3, Phi-4, and Llama 3.1 families.
-`microsoft/phi-4` is pinned to revision
+Phi-4-14B was the next public third-family candidate. `microsoft/phi-4` was
+pinned to revision
 `2db69c1c3e91a05d2c64a3185acfbaf36f744e25`; its pinned tokenizer preserves
 canonical chat-template IDs through string transport, exposes single-token
 A/B/T variants, supports the system role, and has a 16,384-token native
-context. It must pass the same exhaustive prompt and 20-example native plus
-constrained gates before entering the pilot.
+context. It passed constrained extraction on 20/20 examples, but only 6/20
+native outputs both began with a registered verdict token and agreed with the
+constrained verdict. Preserve this failed smoke as an exclusion artifact.
+The predeclared 99% native gate remains unchanged.
 
 Verification after the Phi-4 substitution: 246 tests passed under Python
 3.12, changed Python files compiled, `git diff --check` passed, and the Slurm
 template passed `bash -n`.
+
+The current replacement required matrix is Qwen3-4B, Qwen3-14B,
+OLMo3-7B-Instruct, and Hermes-3-Llama-3.1-8B, spanning Qwen3, OLMo3, and
+Llama 3.1 families. `allenai/Olmo-3-7B-Instruct` is pinned to revision
+`6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only validation
+passed canonical chat-template string transport and the registered A/B/T
+single-token probes. The 20-example constrained and native GPU smoke remains
+pending; OLMo3 cannot enter the pilot unless it passes the same unchanged
+gates.
+
+Verification after the OLMo3 substitution: 248 tests passed under Python
+3.12, changed Python files compiled, `git diff --check` passed, and the
+campaign wrapper passed `bash -n`.

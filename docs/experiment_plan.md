@@ -110,14 +110,14 @@ rerun before analysis.
 
 ### Model matrix amendment (2026-07-30)
 
-The gated full-run minimum is four judges: Qwen3-4B, Qwen3-14B, Phi-4-14B
-(`microsoft/phi-4`), and Hermes3-Llama3.1-8B
-(`NousResearch/Hermes-3-Llama-3.1-8B`). This gives three architecture
-families (Qwen3, Phi-4, and Llama 3.1). Every checkpoint is pinned to an
-immutable model revision and must pass its own 20-example native and
-constrained verdict-extraction gates. Skywork-Critic-Llama-3.1-8B is optional
-and is included only if it passes those same gates; otherwise its failed smoke
-remains an explicit exclusion artifact.
+The gated full-run minimum is four judges: Qwen3-4B, Qwen3-14B,
+OLMo3-7B-Instruct (`allenai/Olmo-3-7B-Instruct`), and
+Hermes3-Llama3.1-8B (`NousResearch/Hermes-3-Llama-3.1-8B`). This gives three
+architecture families (Qwen3, OLMo3, and Llama 3.1). Every checkpoint is
+pinned to an immutable model revision and must pass its own 20-example native
+and constrained verdict-extraction gates. Skywork-Critic-Llama-3.1-8B is
+optional and is included only if it passes those same gates; otherwise its
+failed smoke remains an explicit exclusion artifact.
 The shared campaign context limit is 4,096 tokens. Before inference, every
 model must pass a full-grid prompt-length preflight that includes generation
 headroom; the persisted report is an operational gate, not merely a diagnostic.
@@ -133,8 +133,16 @@ integrity exclusion, not a result-driven model substitution.
 OLMo2-7B-Instruct passed constrained extraction and full-grid prompt transport
 but failed the preregistered native verdict contract (18/20 examples versus
 the 99% minimum). It is retained as an exclusion artifact and is not replaced
-by relaxing the gate. Phi-4-14B is the preregistered public third-family
-replacement and must pass the unchanged gates before any pilot starts.
+by relaxing the gate. Phi-4-14B then passed constrained extraction on 20/20
+examples but failed the same native verdict-token-and-agreement contract on
+14 examples: only 6/20 passed. It is also retained as an exclusion artifact,
+with the 99% gate unchanged.
+
+OLMo3-7B-Instruct is the public third-family replacement, pinned to revision
+`6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only checks passed
+canonical string transport and the registered A/B/T single-token probes. Its
+20-example constrained and native GPU smoke is still pending and must pass
+before any pilot starts.
 
 ## Splits and Analysis Population
 

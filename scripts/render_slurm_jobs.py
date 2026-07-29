@@ -79,6 +79,13 @@ MODEL_SPECS = {
         "128G",
         1,
     ),
+    "olmo3_7b_instruct": ModelSpec(
+        "olmo3_7b_instruct",
+        "allenai/Olmo-3-7B-Instruct",
+        1,
+        "128G",
+        1,
+    ),
     "phi4_14b": ModelSpec(
         "phi4_14b",
         "microsoft/phi-4",

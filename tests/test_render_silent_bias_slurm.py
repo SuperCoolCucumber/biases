@@ -142,6 +142,44 @@ def test_olmo2_render_uses_one_gpu_and_one_tensor_parallel_worker() -> None:
     assert "@@" not in rendered
 
 
+def test_olmo3_render_uses_one_gpu_and_one_tensor_parallel_worker() -> None:
+    model = renderer.MODEL_SPECS["olmo3_7b_instruct"]
+    rendered = renderer.render_silent_bias_job(
+        stage="A",
+        job_name="silent-a-olmo3",
+        model=model,
+        data_file="mtbench_stratified_198.csv",
+        time="01:00:00",
+        cpus_per_task=4,
+        gpus=model.gpus,
+        mem=model.mem,
+        partition=None,
+        qos=None,
+        account=None,
+        artifact_root="${REPO_DIR}/artifacts",
+        consistency_runs=4,
+        consistency_schedule="extremes",
+        sampling_temperature=0.7,
+        include_verbalized_confidence=True,
+        limit=198,
+        stage_a_command="run-silent-bias-clean",
+        stage_b_command="run-silent-bias-cued",
+        stage_a_summary_file="silent_bias_stage_a_pair_summary.jsonl",
+        max_model_len=8192,
+        tensor_parallel_size=model.tensor_parallel_size,
+        gpu_memory_utilization=model.gpu_memory_utilization,
+        dtype=model.dtype,
+    )
+
+    assert model.gpus == 1
+    assert model.mem == "128G"
+    assert model.tensor_parallel_size == 1
+    assert "#SBATCH --gres=gpu:1" in rendered
+    assert "allenai/Olmo-3-7B-Instruct" in rendered
+    assert 'TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"' in rendered
+    assert "@@" not in rendered
+
+
 def test_phi4_render_uses_one_gpu_and_one_tensor_parallel_worker() -> None:
     model = renderer.MODEL_SPECS["phi4_14b"]
     rendered = renderer.render_silent_bias_job(

@@ -192,6 +192,16 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         revision="470b1fba1ae01581f270116362ee4aa1b97f4c84",
         stop_token_texts=("<|endoftext|>",),
     ),
+    "olmo3-7b-instruct": ModelProfile(
+        registry_name="olmo3-7b-instruct",
+        hf_model_name="allenai/Olmo-3-7B-Instruct",
+        family="olmo3",
+        revision="6e5971d9eba42665f5bd5a0fcf047f299ce1dccc",
+        chat_template=ChatTemplatePolicy.TOKENIZER,
+        stop_token_texts=("<|im_end|>", "<|endoftext|>"),
+        supports_system_role=True,
+        supports_text_prompt_transport=True,
+    ),
     "phi4-14b": ModelProfile(
         registry_name="phi4-14b",
         hf_model_name="microsoft/phi-4",
