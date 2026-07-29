@@ -181,6 +181,7 @@ class ExperimentSpec(BaseModel):
     dataset_name: str
     dataset_split: str
     model_name: str
+    model_revision: str | None = None
     backend_name: str
     bias_name: str
     output_mode: OutputMode

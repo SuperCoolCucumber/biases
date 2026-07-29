@@ -154,6 +154,7 @@ def _validate_resume_rows(
     stage: Literal["stage_a", "stage_b"],
     input_file_hash: str,
     model_name: str,
+    model_revision: str | None,
     dataset_name: str,
     dataset_split: str,
     consistency_runs: int,
@@ -191,6 +192,7 @@ def _validate_resume_rows(
         checks = {
             "input_file_hash": row.get("input_file_hash") == input_file_hash,
             "model_name": spec.get("model_name") == model_name,
+            "model_revision": spec.get("model_revision") == model_revision,
             "dataset_name": spec.get("dataset_name") == dataset_name,
             "dataset_split": spec.get("dataset_split") == dataset_split,
             "stage": metadata.get("stage") == stage,
@@ -319,6 +321,7 @@ def _evaluate_batch(
     items: list[EvaluationItem],
     csv_path: Path,
     dataset_split: str,
+    model_revision: str | None,
     stage: Literal["stage_a", "stage_b"],
     consistency_runs: int,
     consistency_schedule: ConsistencySchedule,
@@ -408,6 +411,7 @@ def _evaluate_batch(
             dataset_name=csv_path.name,
             dataset_split=dataset_split,
             model_name=judge.model_name,
+            model_revision=model_revision,
             backend_name="vllm",
             bias_name=str(condition.bias_type),
             output_mode=OutputMode.CHOICE_ONLY,
@@ -460,6 +464,7 @@ def _evaluate_new_items(
     existing_rows: list[dict[str, Any]],
     csv_path: Path,
     dataset_split: str,
+    model_revision: str | None,
     stage: Literal["stage_a", "stage_b"],
     consistency_runs: int,
     consistency_schedule: ConsistencySchedule,
@@ -482,6 +487,7 @@ def _evaluate_new_items(
             items=batch,
             csv_path=csv_path,
             dataset_split=dataset_split,
+            model_revision=model_revision,
             stage=stage,
             consistency_runs=consistency_runs,
             consistency_schedule=consistency_schedule,
@@ -627,6 +633,7 @@ def run_silent_bias_clean(
 
     profile = get_model_profile(model_name)
     canonical_model_name = profile.hf_model_name
+    model_revision = profile.revision
     input_hash = file_sha256(csv_path)
     pair_inputs, pairs_by_identity = _build_stage_a_inputs_and_examples(
         csv_path=csv_path,
@@ -661,6 +668,7 @@ def run_silent_bias_clean(
         stage="stage_a",
         input_file_hash=input_hash,
         model_name=canonical_model_name,
+        model_revision=model_revision,
         dataset_name=csv_path.name,
         dataset_split=dataset_split,
         consistency_runs=consistency_runs,
@@ -674,6 +682,7 @@ def run_silent_bias_clean(
         existing_rows=existing_rows,
         csv_path=csv_path,
         dataset_split=dataset_split,
+        model_revision=model_revision,
         stage="stage_a",
         consistency_runs=consistency_runs,
         consistency_schedule=consistency_schedule,
@@ -690,6 +699,7 @@ def run_silent_bias_clean(
     summary = {
         "stage": "A",
         "model_name": canonical_model_name,
+        "model_revision": model_revision,
         "dataset_path": str(csv_path),
         "dataset_split": dataset_split,
         "input_file_hash": input_hash,
@@ -742,6 +752,7 @@ def run_silent_bias_cued(
 
     profile = get_model_profile(model_name)
     canonical_model_name = profile.hf_model_name
+    model_revision = profile.revision
     input_hash = file_sha256(csv_path)
     pair_inputs, pairs_by_identity = _build_stage_a_inputs_and_examples(
         csv_path=csv_path,
@@ -804,6 +815,7 @@ def run_silent_bias_cued(
         stage="stage_b",
         input_file_hash=input_hash,
         model_name=canonical_model_name,
+        model_revision=model_revision,
         dataset_name=csv_path.name,
         dataset_split=dataset_split,
         consistency_runs=consistency_runs,
@@ -817,6 +829,7 @@ def run_silent_bias_cued(
         existing_rows=existing_rows,
         csv_path=csv_path,
         dataset_split=dataset_split,
+        model_revision=model_revision,
         stage="stage_b",
         consistency_runs=consistency_runs,
         consistency_schedule=consistency_schedule,
@@ -833,6 +846,7 @@ def run_silent_bias_cued(
     summary = {
         "stage": "B",
         "model_name": canonical_model_name,
+        "model_revision": model_revision,
         "dataset_path": str(csv_path),
         "dataset_split": dataset_split,
         "input_file_hash": input_hash,

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from biases.schemas import BiasCondition, BiasType, VerdictLabel
+from biases.models import get_model_profile
 from biases.silent_bias_runner import (
     consistency_runs_for_condition,
     run_silent_bias_clean,
@@ -135,6 +136,13 @@ def test_fake_backend_runs_both_stages_and_resume_is_idempotent(
 
     clean_rows = _read_jsonl(Path(stage_a["uncertainty_scores_path"]))
     cued_rows = _read_jsonl(Path(stage_b["uncertainty_scores_path"]))
+    expected_revision = get_model_profile("qwen3-4b").revision
+    assert stage_a["model_revision"] == expected_revision
+    assert stage_b["model_revision"] == expected_revision
+    assert {
+        row["spec"]["model_revision"]
+        for row in _read_jsonl(Path(stage_a["raw_records_path"]))
+    } == {expected_revision}
     assert {row["ordering"] for row in clean_rows} == {"ab", "ba"}
     assert {row["question_id"] for row in clean_rows} == {"q1", "q2"}
     assert all(row["pair_key"] for row in cued_rows)
@@ -205,6 +213,39 @@ def test_resume_rejects_incompatible_existing_rows(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="input_file_hash"):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            judge=judge,
+        )
+
+
+def test_resume_rejects_a_different_model_revision(tmp_path: Path) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    judge = _FakeJudge()
+
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        judge=judge,
+    )
+    raw_path = Path(summary["raw_records_path"])
+    rows = _read_jsonl(raw_path)
+    rows[0]["spec"]["model_revision"] = "different-revision"
+    raw_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="model_revision"):
         run_silent_bias_clean(
             csv_path=csv_path,
             output_dir=output_dir,
