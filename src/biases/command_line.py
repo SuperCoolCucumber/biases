@@ -160,6 +160,27 @@ def _add_common_vllm_args(subparser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_vllm_scheduler_args(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Optional vLLM scheduler token budget; omitted uses the vLLM "
+            "default."
+        ),
+    )
+    subparser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=None,
+        help=(
+            "Optional vLLM scheduler sequence limit; omitted uses the vLLM "
+            "default."
+        ),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="biases",
@@ -243,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory where Stage A and Stage B artifacts will be written.",
     )
     _add_common_vllm_args(silent_clean_parser)
+    _add_vllm_scheduler_args(silent_clean_parser)
     silent_clean_parser.set_defaults(
         model_name="qwen3-4b",
         consistency_runs=8,
@@ -282,6 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory where Stage A and Stage B artifacts will be written.",
     )
     _add_common_vllm_args(silent_cued_parser)
+    _add_vllm_scheduler_args(silent_cued_parser)
     silent_cued_parser.set_defaults(
         model_name="qwen3-4b",
         consistency_runs=8,
@@ -410,6 +433,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_model_len=args.max_model_len,
             gpu_memory_utilization=args.gpu_memory_utilization,
             dtype=args.dtype,
+            max_num_batched_tokens=args.max_num_batched_tokens,
+            max_num_seqs=args.max_num_seqs,
             include_verbalized_confidence=not args.skip_verbalized_confidence,
             batch_size=args.batch_size,
             resume=not args.no_resume,
@@ -432,6 +457,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_model_len=args.max_model_len,
             gpu_memory_utilization=args.gpu_memory_utilization,
             dtype=args.dtype,
+            max_num_batched_tokens=args.max_num_batched_tokens,
+            max_num_seqs=args.max_num_seqs,
             include_verbalized_confidence=not args.skip_verbalized_confidence,
             batch_size=args.batch_size,
             resume=not args.no_resume,

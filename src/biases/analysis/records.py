@@ -149,6 +149,8 @@ class ConditionRecord:
     verbalized_confidence: float | None
     consistency_entropy: float | None
     consistency_agreement: float | None
+    verbalized_verdict: str | None = None
+    consistency_majority_verdict: str | None = None
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -277,8 +279,23 @@ def record_from_mapping(row: Mapping[str, Any]) -> ConditionRecord:
                 ("uncertainty", "verbalized", "confidence"),
             )
         ),
+        verbalized_verdict=normalize_label(
+            _first(
+                row,
+                "verbalized_verdict",
+                ("uncertainty", "verbalized", "verdict"),
+                ("metadata", "verbalized_verdict"),
+            )
+        ),
         consistency_entropy=_optional_float(consistency_entropy),
         consistency_agreement=_optional_float(consistency_agreement),
+        consistency_majority_verdict=normalize_label(
+            _first(
+                row,
+                "consistency_majority_verdict",
+                ("uncertainty", "consistency", "majority_verdict"),
+            )
+        ),
     )
 
 

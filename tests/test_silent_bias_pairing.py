@@ -6,7 +6,12 @@ from biases.pairing import (
     make_pair_identity_key,
     make_pair_key,
 )
-from biases.schemas import ConsistencyMetrics, PairOrdering, RunRecord
+from biases.schemas import (
+    ConsistencyMetrics,
+    PairOrdering,
+    RunRecord,
+    VerbalizedMetrics,
+)
 
 
 def test_legacy_run_record_remains_valid_without_linkage_fields() -> None:
@@ -61,6 +66,14 @@ def test_consistency_majority_verdict_is_optional() -> None:
 
     assert legacy.majority_verdict is None
     assert enriched.model_dump(mode="json")["majority_verdict"] == "A"
+
+
+def test_verbalized_verdict_is_optional_and_serialized_when_present() -> None:
+    legacy = VerbalizedMetrics.from_confidence(80.0)
+    enriched = VerbalizedMetrics.from_confidence(80.0, verdict="B")
+
+    assert legacy.verdict is None
+    assert enriched.model_dump(mode="json")["verdict"] == "B"
 
 
 def test_pair_identity_is_collision_safe_for_repeated_question_rows() -> None:

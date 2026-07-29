@@ -83,6 +83,30 @@ def test_pairing_and_paired_shift_include_mass_js_flip_and_error() -> None:
     assert shift.error is True
 
 
+def test_analysis_records_preserve_secondary_channel_verdicts() -> None:
+    flat = record_from_mapping(
+        {
+            **_row("flat", "q-flat"),
+            "verbalized_verdict": "B",
+            "consistency_majority_verdict": "tie",
+        }
+    )
+    nested = record_from_mapping(
+        {
+            **_row("nested", "q-nested"),
+            "metadata": {"verbalized_verdict": "tie"},
+            "uncertainty": {
+                "consistency": {"majority_verdict": "B"},
+            },
+        }
+    )
+
+    assert flat.verbalized_verdict == "B"
+    assert flat.consistency_majority_verdict == "tie"
+    assert nested.verbalized_verdict == "tie"
+    assert nested.consistency_majority_verdict == "B"
+
+
 def test_jensen_shannon_is_symmetric_and_zero_for_equal_distributions() -> None:
     first = (0.7, 0.2, 0.1)
     second = (0.2, 0.7, 0.1)

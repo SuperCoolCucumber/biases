@@ -49,6 +49,7 @@ from biases.analysis.selective import (
     cluster_bootstrap_draws,
     clean_calibrated_threshold_transfer_with_cluster_bootstrap,
     confidence_value,
+    paired_channel_flip,
     paired_correctness_mcnemar,
     prediction_from_record,
     risk_coverage_curve,
@@ -57,7 +58,7 @@ from biases.analysis.selective import (
 from biases.analysis.statistics import holm_adjust
 
 
-ANALYSIS_VERSION = "silent-bias-p4-v3"
+ANALYSIS_VERSION = "silent-bias-p4-v4"
 OUTPUT_NAMES = (
     "paired_shifts.csv",
     "rq1_silent_shift.csv",
@@ -319,6 +320,9 @@ def calibration_outputs(
                     **condition,
                     "confidence_channel": confidence_channel,
                     "n": result.n,
+                    "total_n": len(group),
+                    "missing_n": len(group) - result.n,
+                    "availability_rate": result.n / len(group),
                     "brier_n": result.brier_n,
                     "ece": result.ece,
                     "brier": result.brier,
@@ -1091,14 +1095,40 @@ def modeling_outputs(shifts: Sequence[PairedShift]) -> list[dict[str, Any]]:
 def _attach_flip(
     records: Sequence[ConditionRecord],
     shifts: Sequence[PairedShift],
+    clean_records: Sequence[ConditionRecord],
 ) -> list[ScoredPrediction]:
     shift_by_record = {shift.cued_record_id: shift for shift in shifts}
+    clean_by_id = {record.record_id: record for record in clean_records}
     predictions: list[ScoredPrediction] = []
     for record in records:
         shift = shift_by_record.get(record.record_id)
-        prediction = prediction_from_record(
-            record,
+        base_prediction = prediction_from_record(record)
+        clean_prediction = (
+            prediction_from_record(clean_by_id[shift.clean_record_id])
+            if shift is not None and shift.clean_record_id in clean_by_id
+            else None
+        )
+        prediction = replace(
+            base_prediction,
             flip=shift.flip if shift is not None else None,
+            consistency_flip=(
+                paired_channel_flip(
+                    clean_prediction,
+                    base_prediction,
+                    "consistency_agreement",
+                )
+                if clean_prediction is not None
+                else None
+            ),
+            verbalized_flip=(
+                paired_channel_flip(
+                    clean_prediction,
+                    base_prediction,
+                    "verbalized_confidence",
+                )
+                if clean_prediction is not None
+                else None
+            ),
         )
         if prediction.human_winner is None and shift is not None:
             prediction = replace(prediction, human_winner=shift.human_winner)
@@ -1186,6 +1216,13 @@ def main() -> None:
         "ece_bins": args.ece_bins,
         "target_risks": list(args.target_risk),
         "confidence_channels": list(CONFIDENCE_CHANNELS),
+        "confidence_verdict_policy": {
+            "msp": "deterministic_logit_verdict",
+            "consistency_agreement": "consistency_majority_verdict",
+            "verbalized_confidence": "verbalized_pass_verdict",
+        },
+        "missing_channel_verdict_policy": "exclude_without_fallback",
+        "accepted_flip_policy": "matching_channel_clean_vs_cued_verdict",
         "tie_policy": "strict_three_class",
         "formula": MIXED_EFFECTS_FORMULA,
     }
@@ -1203,8 +1240,22 @@ def main() -> None:
     }
 
     annotated_cued_records = _annotate_cued_records(cued_records, shifts)
-    clean_predictions = [prediction_from_record(record, flip=False) for record in clean_records]
-    biased_predictions = _attach_flip(annotated_cued_records, shifts)
+    clean_predictions = [
+        prediction_from_record(
+            record,
+            flip=False,
+            consistency_flip=(
+                False if record.consistency_majority_verdict is not None else None
+            ),
+            verbalized_flip=False if record.verbalized_verdict is not None else None,
+        )
+        for record in clean_records
+    ]
+    biased_predictions = _attach_flip(
+        annotated_cued_records,
+        shifts,
+        clean_records,
+    )
     all_predictions = [*clean_predictions, *biased_predictions]
     rq2_calibration, rq2_reliability = calibration_outputs(
         all_predictions,

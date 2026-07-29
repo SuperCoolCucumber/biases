@@ -55,7 +55,11 @@ def _prediction(
         clean_tie=clean_tie,
         msp=0.8,
         consistency_agreement=0.75,
+        consistency_majority_verdict=verdict,
         verbalized_confidence=0.7,
+        verbalized_verdict=verdict,
+        consistency_flip=flip,
+        verbalized_flip=flip,
     )
 
 

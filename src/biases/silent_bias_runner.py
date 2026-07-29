@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -11,12 +12,14 @@ from biases.models import get_model_profile
 from biases.pairing import file_sha256, make_pair_identity_key, normalize_ordering
 from biases.position_bias import (
     DEFAULT_MAX_MODEL_LEN,
+    JUDGE_OUTPUT_PARSER_VERSION,
     VLLMJudge,
     _build_run_record,
     _compute_consistency,
     _label_to_str,
     _record_to_uncertainty_row,
     load_position_pairs,
+    verbalized_parse_status,
 )
 from biases.schemas import (
     BiasCondition,
@@ -208,6 +211,8 @@ def _validate_resume_rows(
     consistency_schedule: ConsistencySchedule,
     sampling_temperature: float,
     include_verbalized_confidence: bool,
+    max_num_batched_tokens: int | None,
+    max_num_seqs: int | None,
 ) -> None:
     expected = {
         (item.planned.pair_key, item.planned.condition.variant_id): item
@@ -299,6 +304,26 @@ def _validate_resume_rows(
             "conversation_extraction_mode": (
                 metadata.get("conversation_extraction_mode")
                 == item.example.metadata.get("conversation_extraction_mode")
+            ),
+            "judge_output_parser_version": (
+                metadata.get("judge_output_parser_version")
+                == JUDGE_OUTPUT_PARSER_VERSION
+            ),
+            "verbalized_parse_status": (
+                metadata.get("verbalized_parse_status")
+                == verbalized_parse_status(
+                    uncertainty_methods=expected_methods,
+                    raw_output=metadata.get("verbalized_raw_output"),
+                )
+            ),
+            "max_num_batched_tokens": (
+                "max_num_batched_tokens" in metadata
+                and metadata.get("max_num_batched_tokens")
+                == max_num_batched_tokens
+            ),
+            "max_num_seqs": (
+                "max_num_seqs" in metadata
+                and metadata.get("max_num_seqs") == max_num_seqs
             ),
             "consistency_runs": spec.get("consistency_runs") == expected_consistency,
             "consistency_schedule": (
@@ -431,6 +456,8 @@ def _evaluate_batch(
     consistency_schedule: ConsistencySchedule,
     sampling_temperature: float,
     include_verbalized_confidence: bool,
+    max_num_batched_tokens: int | None,
+    max_num_seqs: int | None,
 ) -> list[RunRecord]:
     choice_prompts = [
         _prompt_package(judge=judge, item=item, output_mode=OutputMode.CHOICE_ONLY)
@@ -555,6 +582,8 @@ def _evaluate_batch(
                 "stage": stage,
                 "consistency_runs_actual": run_counts[index],
                 "template_variant_id": condition.variant_id,
+                "max_num_batched_tokens": max_num_batched_tokens,
+                "max_num_seqs": max_num_seqs,
             }
         )
         records.append(record)
@@ -574,6 +603,8 @@ def _evaluate_new_items(
     consistency_schedule: ConsistencySchedule,
     sampling_temperature: float,
     include_verbalized_confidence: bool,
+    max_num_batched_tokens: int | None,
+    max_num_seqs: int | None,
     batch_size: int,
     checkpoint_path: Path | None = None,
 ) -> list[dict[str, Any]]:
@@ -597,6 +628,8 @@ def _evaluate_new_items(
             consistency_schedule=consistency_schedule,
             sampling_temperature=sampling_temperature,
             include_verbalized_confidence=include_verbalized_confidence,
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
         )
         batch_rows = [
             record.model_dump(mode="json") for record in records
@@ -630,6 +663,14 @@ def _clean_summary_row(record: RunRecord) -> dict[str, Any]:
         "conversation_extraction_mode": record.metadata.get(
             "conversation_extraction_mode"
         ),
+        "judge_output_parser_version": record.metadata.get(
+            "judge_output_parser_version"
+        ),
+        "verbalized_parse_status": record.metadata.get(
+            "verbalized_parse_status"
+        ),
+        "max_num_batched_tokens": record.metadata.get("max_num_batched_tokens"),
+        "max_num_seqs": record.metadata.get("max_num_seqs"),
         "human_winner": record.metadata.get("human_winner"),
         "clean_verdict": record.verdict,
         "verdict": record.verdict,
@@ -661,6 +702,14 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
         "conversation_extraction_mode": record.metadata.get(
             "conversation_extraction_mode"
         ),
+        "judge_output_parser_version": record.metadata.get(
+            "judge_output_parser_version"
+        ),
+        "verbalized_parse_status": record.metadata.get(
+            "verbalized_parse_status"
+        ),
+        "max_num_batched_tokens": record.metadata.get("max_num_batched_tokens"),
+        "max_num_seqs": record.metadata.get("max_num_seqs"),
         "human_winner": human_winner,
         "clean_verdict": clean_verdict,
         "verdict": record.verdict,
@@ -696,6 +745,16 @@ def _materialize_derived_outputs(
     return records
 
 
+def _verbalized_parse_status_counts(
+    records: Sequence[RunRecord],
+) -> dict[str, int]:
+    counts = Counter(
+        str(record.metadata.get("verbalized_parse_status") or "missing_status")
+        for record in records
+    )
+    return dict(sorted(counts.items()))
+
+
 def _write_issues(path: Path, issues: Sequence[PlanningIssue]) -> None:
     _atomic_write_json(path, [asdict(issue) for issue in issues])
 
@@ -707,6 +766,8 @@ def _new_vllm_judge(
     max_model_len: int,
     gpu_memory_utilization: float,
     dtype: str,
+    max_num_batched_tokens: int | None,
+    max_num_seqs: int | None,
 ) -> VLLMJudge:
     return VLLMJudge(
         model_name=model_name,
@@ -714,7 +775,20 @@ def _new_vllm_judge(
         max_model_len=max_model_len,
         gpu_memory_utilization=gpu_memory_utilization,
         dtype=dtype,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
     )
+
+
+def _vllm_scheduler_provenance(
+    *,
+    max_num_batched_tokens: int | None,
+    max_num_seqs: int | None,
+) -> dict[str, int | None]:
+    return {
+        "max_num_batched_tokens": max_num_batched_tokens,
+        "max_num_seqs": max_num_seqs,
+    }
 
 
 def run_silent_bias_clean(
@@ -731,6 +805,8 @@ def run_silent_bias_clean(
     max_model_len: int = DEFAULT_MAX_MODEL_LEN,
     gpu_memory_utilization: float = 0.9,
     dtype: str = "auto",
+    max_num_batched_tokens: int | None = None,
+    max_num_seqs: int | None = None,
     include_verbalized_confidence: bool = True,
     batch_size: int = 64,
     resume: bool = True,
@@ -771,6 +847,8 @@ def run_silent_bias_clean(
         max_model_len=max_model_len,
         gpu_memory_utilization=gpu_memory_utilization,
         dtype=dtype,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
     )
     if active_judge.model_name != canonical_model_name:
         raise ValueError(
@@ -796,6 +874,8 @@ def run_silent_bias_clean(
         consistency_schedule=consistency_schedule,
         sampling_temperature=sampling_temperature,
         include_verbalized_confidence=include_verbalized_confidence,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
     )
     raw_rows = _evaluate_new_items(
         judge=active_judge,
@@ -809,6 +889,8 @@ def run_silent_bias_clean(
         consistency_schedule=consistency_schedule,
         sampling_temperature=sampling_temperature,
         include_verbalized_confidence=include_verbalized_confidence,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
         batch_size=batch_size,
         checkpoint_path=paths.raw_records,
     )
@@ -831,6 +913,14 @@ def run_silent_bias_clean(
         "consistency_schedule": consistency_schedule,
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
+        "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "verbalized_parse_status_counts": _verbalized_parse_status_counts(
+            records
+        ),
+        **_vllm_scheduler_provenance(
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
+        ),
         "raw_records_path": str(paths.raw_records),
         "uncertainty_scores_path": str(paths.uncertainty_scores),
         "pair_summary_path": str(paths.pair_summary),
@@ -855,6 +945,8 @@ def run_silent_bias_cued(
     max_model_len: int = DEFAULT_MAX_MODEL_LEN,
     gpu_memory_utilization: float = 0.9,
     dtype: str = "auto",
+    max_num_batched_tokens: int | None = None,
+    max_num_seqs: int | None = None,
     include_verbalized_confidence: bool = True,
     batch_size: int = 64,
     resume: bool = True,
@@ -890,9 +982,19 @@ def run_silent_bias_cued(
     }
 
     clean_rows = _read_jsonl(stage_a_summary_path)
+    model_clean_rows = [
+        row for row in clean_rows if row.get("model_name") == canonical_model_name
+    ]
+    if any(
+        row.get("judge_output_parser_version") != JUDGE_OUTPUT_PARSER_VERSION
+        for row in model_clean_rows
+    ):
+        raise ValueError(
+            "Stage A summary uses an incompatible judge_output_parser_version"
+        )
     clean_summaries = tuple(
         summary
-        for summary in clean_summaries_from_rows(clean_rows)
+        for summary in clean_summaries_from_rows(model_clean_rows)
         if summary.model_name == canonical_model_name
     )
     if not clean_summaries:
@@ -923,6 +1025,8 @@ def run_silent_bias_cued(
         max_model_len=max_model_len,
         gpu_memory_utilization=gpu_memory_utilization,
         dtype=dtype,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
     )
     if active_judge.model_name != canonical_model_name:
         raise ValueError(
@@ -948,6 +1052,8 @@ def run_silent_bias_cued(
         consistency_schedule=consistency_schedule,
         sampling_temperature=sampling_temperature,
         include_verbalized_confidence=include_verbalized_confidence,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
     )
     raw_rows = _evaluate_new_items(
         judge=active_judge,
@@ -961,6 +1067,8 @@ def run_silent_bias_cued(
         consistency_schedule=consistency_schedule,
         sampling_temperature=sampling_temperature,
         include_verbalized_confidence=include_verbalized_confidence,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
         batch_size=batch_size,
         checkpoint_path=paths.raw_records,
     )
@@ -987,6 +1095,14 @@ def run_silent_bias_cued(
         "consistency_schedule": consistency_schedule,
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
+        "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "verbalized_parse_status_counts": _verbalized_parse_status_counts(
+            records
+        ),
+        **_vllm_scheduler_provenance(
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
+        ),
         "raw_records_path": str(paths.raw_records),
         "uncertainty_scores_path": str(paths.uncertainty_scores),
         "pair_summary_path": str(paths.pair_summary),

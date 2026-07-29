@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -25,8 +26,10 @@ from biases.analysis.selective import (
     clean_calibrated_threshold_transfer_with_cluster_bootstrap,
     confidence_value,
     evaluate_threshold_transfer,
+    paired_channel_flip,
     paired_correctness_mcnemar,
     risk_coverage_curve,
+    scoring_verdict,
     swap_average_pair,
     swap_average_records,
 )
@@ -93,7 +96,8 @@ def _brute_force_risk_coverage(
             if confidence >= threshold
         ]
         errors = sum(
-            prediction.verdict != prediction.human_winner
+            scoring_verdict(prediction, confidence_channel)
+            != prediction.human_winner
             for prediction in accepted
         )
         points.append(
@@ -193,6 +197,150 @@ def test_multiclass_calibration_and_tie_grouped_risk_coverage() -> None:
     assert curve.points[1].risk == pytest.approx(0.0)
     assert curve.points[-1].risk == pytest.approx(0.5)
     assert curve.aurc == pytest.approx(0.125)
+
+
+def test_secondary_confidence_channels_use_their_own_verdicts_and_flips() -> None:
+    prediction = ScoredPrediction(
+        record_id="mismatch",
+        question_id="q1",
+        pair_key="q1",
+        ordering="ab",
+        model_name="judge",
+        routing_split="test",
+        family="authority",
+        direction="incongruent",
+        dose=4,
+        variant_id="authority_incongruent_4_ab",
+        verdict="A",
+        human_winner="A",
+        probabilities=(0.9, 0.05, 0.05),
+        confidence=0.9,
+        flip=False,
+        msp=0.9,
+        consistency_agreement=0.85,
+        consistency_majority_verdict="B",
+        verbalized_confidence=0.8,
+        verbalized_verdict="tie",
+        consistency_flip=True,
+        verbalized_flip=True,
+    )
+
+    msp = calibration_summary([prediction], confidence_channel="msp")
+    consistency = calibration_summary(
+        [prediction],
+        confidence_channel="consistency_agreement",
+    )
+    verbalized = calibration_summary(
+        [prediction],
+        confidence_channel="verbalized_confidence",
+    )
+    assert msp.accuracy == pytest.approx(1.0)
+    assert consistency.accuracy == pytest.approx(0.0)
+    assert verbalized.accuracy == pytest.approx(0.0)
+    assert msp.brier is not None
+    assert msp.brier_n == 1
+    assert consistency.brier is None
+    assert consistency.brier_n == 0
+    assert verbalized.brier is None
+    assert verbalized.brier_n == 0
+    assert risk_coverage_curve(
+        [prediction],
+        confidence_channel="msp",
+    ).points[-1].risk == pytest.approx(0.0)
+    assert risk_coverage_curve(
+        [prediction],
+        confidence_channel="consistency_agreement",
+    ).points[-1].risk == pytest.approx(1.0)
+
+    consistency_rule = calibrate_threshold_at_target_risk(
+        [prediction],
+        target_risk=1.0,
+        confidence_channel="consistency_agreement",
+    )
+    consistency_transfer = evaluate_threshold_transfer(
+        [prediction],
+        consistency_rule,
+    )
+    assert consistency_transfer.realized_risk == pytest.approx(1.0)
+    assert consistency_transfer.flips == 1
+    assert consistency_transfer.accepted_flip_fraction == pytest.approx(1.0)
+
+    msp_rule = calibrate_threshold_at_target_risk(
+        [prediction],
+        target_risk=1.0,
+        confidence_channel="msp",
+    )
+    assert evaluate_threshold_transfer([prediction], msp_rule).flips == 0
+
+
+def test_missing_secondary_verdict_disables_only_its_confidence_channel() -> None:
+    prediction = ScoredPrediction(
+        record_id="missing-secondary-verdicts",
+        question_id="q1",
+        pair_key="q1",
+        ordering="ab",
+        model_name="judge",
+        routing_split="test",
+        family="clean",
+        direction="clean",
+        dose=None,
+        variant_id="clean",
+        verdict="A",
+        human_winner="A",
+        probabilities=(0.9, 0.05, 0.05),
+        confidence=0.9,
+        msp=0.9,
+        consistency_agreement=0.9,
+        verbalized_confidence=0.9,
+    )
+
+    assert confidence_value(prediction, "msp") == pytest.approx(0.9)
+    assert confidence_value(prediction, "consistency_agreement") is None
+    assert confidence_value(prediction, "verbalized_confidence") is None
+    assert risk_coverage_curve([prediction], confidence_channel="msp").n == 1
+    assert (
+        risk_coverage_curve(
+            [prediction],
+            confidence_channel="consistency_agreement",
+        ).n
+        == 0
+    )
+    assert (
+        risk_coverage_curve(
+            [prediction],
+            confidence_channel="verbalized_confidence",
+        ).n
+        == 0
+    )
+
+
+def test_paired_channel_flip_compares_matching_clean_and_cued_verdicts() -> None:
+    clean = replace(
+        _prediction(
+            "clean",
+            0.9,
+            verdict="A",
+            human="A",
+            probabilities=(0.9, 0.05, 0.05),
+        ),
+        consistency_majority_verdict="A",
+        verbalized_verdict="B",
+    )
+    cued = replace(
+        _prediction(
+            "cued",
+            0.8,
+            verdict="A",
+            human="A",
+            probabilities=(0.8, 0.15, 0.05),
+        ),
+        consistency_majority_verdict="B",
+        verbalized_verdict="B",
+    )
+
+    assert paired_channel_flip(clean, cued, "msp") is False
+    assert paired_channel_flip(clean, cued, "consistency_agreement") is True
+    assert paired_channel_flip(clean, cued, "verbalized_confidence") is False
 
 
 def test_clean_threshold_transfer_counts_confident_flips() -> None:
@@ -456,6 +604,107 @@ def test_sufficient_statistic_bootstrap_matches_materialized_cluster_samples() -
     ) / (len(reference["risk_inflation_vs_target"]) + 1)
     assert actual.risk_inflation_vs_target_p_value_one_sided == pytest.approx(
         expected_p
+    )
+
+
+def test_consistency_bootstrap_uses_majority_verdict_and_channel_flip() -> None:
+    clean = [
+        replace(
+            _prediction(
+                f"c{index}",
+                confidence,
+                verdict="A",
+                human="A",
+                probabilities=(confidence, 1.0 - confidence, 0.0),
+                question_id=f"clean-q{index}",
+            ),
+            consistency_agreement=confidence,
+            consistency_majority_verdict=majority,
+            consistency_flip=False,
+        )
+        for index, (confidence, majority) in enumerate(
+            ((0.95, "A"), (0.8, "B"), (0.7, "A"), (0.6, "B")),
+            start=1,
+        )
+    ]
+    biased = [
+        replace(
+            _prediction(
+                f"b{index}",
+                confidence,
+                verdict="A",
+                human="A",
+                probabilities=(confidence, 1.0 - confidence, 0.0),
+                flip=False,
+                question_id=question_id,
+            ),
+            consistency_agreement=confidence,
+            consistency_majority_verdict=majority,
+            consistency_flip=flip,
+        )
+        for index, (confidence, majority, flip, question_id) in enumerate(
+            (
+                (0.9, "B", True, "test-q1"),
+                (0.75, "A", False, "test-q1"),
+                (0.5, "B", True, "test-q2"),
+                (0.4, "A", False, "test-q3"),
+            ),
+            start=1,
+        )
+    ]
+    n_resamples = 40
+    seed = 23
+    calibrated = bootstrap_threshold_rules(
+        clean,
+        target_risk=0.25,
+        confidence_channel="consistency_agreement",
+        n_resamples=n_resamples,
+        seed=seed,
+    )
+    reference_risks: list[float] = []
+    reference_flips: list[float] = []
+    for rule, sample in zip(
+        calibrated.sampled_rules,
+        cluster_resamples(
+            biased,
+            cluster_key=lambda prediction: prediction.question_id,
+            n_resamples=n_resamples,
+            seed=seed + 1,
+        ),
+        strict=True,
+    ):
+        transfer = evaluate_threshold_transfer(sample, rule)
+        if transfer.realized_risk is not None:
+            reference_risks.append(transfer.realized_risk)
+        if transfer.accepted_flip_fraction is not None:
+            reference_flips.append(transfer.accepted_flip_fraction)
+
+    actual = clean_calibrated_threshold_transfer_with_cluster_bootstrap(
+        clean,
+        biased,
+        target_risk=0.25,
+        confidence_channel="consistency_agreement",
+        n_resamples=n_resamples,
+        seed=seed,
+        threshold_bootstrap=calibrated,
+        test_bootstrap=cluster_bootstrap_draws(
+            biased,
+            n_resamples=n_resamples,
+            seed=seed + 1,
+        ),
+    )
+
+    assert actual.realized_risk_ci_low == pytest.approx(
+        percentile(reference_risks, 0.025)
+    )
+    assert actual.realized_risk_ci_high == pytest.approx(
+        percentile(reference_risks, 0.975)
+    )
+    assert actual.accepted_flip_fraction_ci_low == pytest.approx(
+        percentile(reference_flips, 0.025)
+    )
+    assert actual.accepted_flip_fraction_ci_high == pytest.approx(
+        percentile(reference_flips, 0.975)
     )
 
 

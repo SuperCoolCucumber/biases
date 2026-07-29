@@ -149,15 +149,22 @@ class LogitMetrics(BaseModel):
 class VerbalizedMetrics(BaseModel):
     confidence: float | None = None
     uncertainty: float | None = None
+    verdict: VerdictLabel | None = None
 
     @classmethod
-    def from_confidence(cls, confidence: float | None) -> "VerbalizedMetrics":
+    def from_confidence(
+        cls,
+        confidence: float | None,
+        *,
+        verdict: VerdictLabel | None = None,
+    ) -> "VerbalizedMetrics":
         if confidence is None:
-            return cls()
+            return cls(verdict=verdict)
         normalized_confidence = max(0.0, min(100.0, confidence)) / 100.0
         return cls(
             confidence=normalized_confidence,
             uncertainty=1.0 - normalized_confidence,
+            verdict=verdict,
         )
 
 

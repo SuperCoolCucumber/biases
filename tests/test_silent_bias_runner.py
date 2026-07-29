@@ -5,8 +5,11 @@ from pathlib import Path
 
 import pytest
 
+import biases.command_line as command_line
+from biases.command_line import build_parser
 from biases.schemas import BiasCondition, BiasType, VerdictLabel
 from biases.models import get_model_profile
+from biases.position_bias import JUDGE_OUTPUT_PARSER_VERSION
 from biases.silent_bias_runner import (
     consistency_runs_for_condition,
     run_silent_bias_clean,
@@ -74,6 +77,20 @@ class _InterruptingJudge(_FakeJudge):
         )
 
 
+class _UnavailableConfidenceJudge(_FakeJudge):
+    def __init__(self, raw_output: str) -> None:
+        self.raw_output = raw_output
+
+    def verbalize_confidence_batch(
+        self,
+        prompt_texts: list[str],
+        seed: int = 0,
+        max_tokens: int = 24,
+    ) -> list[tuple[VerdictLabel | None, str, float | None]]:
+        del seed, max_tokens
+        return [(None, self.raw_output, None) for _ in prompt_texts]
+
+
 def _write_fixture(path: Path) -> None:
     path.write_text(
         "\n".join(
@@ -93,6 +110,203 @@ def _read_jsonl(path: Path) -> list[dict[str, object]]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def test_silent_bias_cli_scheduler_tuning_is_optional() -> None:
+    parser = build_parser()
+
+    defaults = parser.parse_args(["run-silent-bias-clean"])
+    tuned = parser.parse_args(
+        [
+            "run-silent-bias-cued",
+            "--stage-a-summary",
+            "clean.jsonl",
+            "--max-num-batched-tokens",
+            "32768",
+            "--max-num-seqs",
+            "128",
+        ]
+    )
+
+    assert defaults.max_num_batched_tokens is None
+    assert defaults.max_num_seqs is None
+    assert tuned.max_num_batched_tokens == 32768
+    assert tuned.max_num_seqs == 128
+
+
+@pytest.mark.parametrize(
+    ("command", "target_name", "required_args"),
+    (
+        ("run-silent-bias-clean", "run_silent_bias_clean", ()),
+        (
+            "run-silent-bias-cued",
+            "run_silent_bias_cued",
+            ("--stage-a-summary", "clean.jsonl"),
+        ),
+    ),
+)
+def test_silent_bias_cli_forwards_scheduler_tuning(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    target_name: str,
+    required_args: tuple[str, ...],
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_runner(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(command_line, target_name, _fake_runner)
+
+    exit_code = command_line.main(
+        [
+            command,
+            *required_args,
+            "--max-num-batched-tokens",
+            "32768",
+            "--max-num-seqs",
+            "128",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["max_num_batched_tokens"] == 32768
+    assert captured["max_num_seqs"] == 128
+
+
+def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    _write_fixture(csv_path)
+
+    default_summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=tmp_path / "default",
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        judge=_FakeJudge(),
+    )
+    tuned_summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=tmp_path / "tuned",
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        max_num_batched_tokens=32768,
+        max_num_seqs=128,
+        judge=_FakeJudge(),
+    )
+    cued_summary = run_silent_bias_cued(
+        csv_path=csv_path,
+        stage_a_summary_path=Path(tuned_summary["pair_summary_path"]),
+        output_dir=tmp_path / "tuned",
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        max_num_batched_tokens=16384,
+        max_num_seqs=64,
+        judge=_FakeJudge(),
+    )
+
+    default_rows = _read_jsonl(Path(default_summary["raw_records_path"]))
+    tuned_rows = _read_jsonl(Path(tuned_summary["raw_records_path"]))
+    tuned_flat_rows = _read_jsonl(Path(tuned_summary["uncertainty_scores_path"]))
+    tuned_pair_rows = _read_jsonl(Path(tuned_summary["pair_summary_path"]))
+    cued_rows = _read_jsonl(Path(cued_summary["raw_records_path"]))
+    cued_flat_rows = _read_jsonl(Path(cued_summary["uncertainty_scores_path"]))
+    cued_pair_rows = _read_jsonl(Path(cued_summary["pair_summary_path"]))
+    assert default_summary["max_num_batched_tokens"] is None
+    assert default_summary["max_num_seqs"] is None
+    assert tuned_summary["max_num_batched_tokens"] == 32768
+    assert tuned_summary["max_num_seqs"] == 128
+    assert (
+        tuned_summary["judge_output_parser_version"]
+        == JUDGE_OUTPUT_PARSER_VERSION
+    )
+    assert tuned_summary["verbalized_parse_status_counts"] == {
+        "not_requested": 4
+    }
+    assert cued_summary["max_num_batched_tokens"] == 16384
+    assert cued_summary["max_num_seqs"] == 64
+    assert cued_summary["verbalized_parse_status_counts"] == {
+        "not_requested": 64
+    }
+    assert {
+        (
+            row["metadata"]["max_num_batched_tokens"],
+            row["metadata"]["max_num_seqs"],
+        )
+        for row in default_rows
+    } == {(None, None)}
+    assert {
+        (
+            row["metadata"]["max_num_batched_tokens"],
+            row["metadata"]["max_num_seqs"],
+        )
+        for row in tuned_rows
+    } == {(32768, 128)}
+    assert {
+        (row["max_num_batched_tokens"], row["max_num_seqs"])
+        for row in tuned_flat_rows
+    } == {(32768, 128)}
+    assert {
+        (row["max_num_batched_tokens"], row["max_num_seqs"])
+        for row in tuned_pair_rows
+    } == {(32768, 128)}
+    assert {
+        row["metadata"]["verbalized_parse_status"] for row in tuned_rows
+    } == {"not_requested"}
+    assert {
+        row["verbalized_parse_status"] for row in tuned_flat_rows
+    } == {"not_requested"}
+    assert {
+        row["verbalized_parse_status"] for row in tuned_pair_rows
+    } == {"not_requested"}
+    assert {
+        (
+            row["metadata"]["max_num_batched_tokens"],
+            row["metadata"]["max_num_seqs"],
+        )
+        for row in cued_rows
+    } == {(16384, 64)}
+    assert {
+        (row["max_num_batched_tokens"], row["max_num_seqs"])
+        for row in cued_flat_rows
+    } == {(16384, 64)}
+    assert {
+        (row["max_num_batched_tokens"], row["max_num_seqs"])
+        for row in cued_pair_rows
+    } == {(16384, 64)}
+    assert {
+        row["metadata"]["verbalized_parse_status"] for row in cued_rows
+    } == {"not_requested"}
+    assert {
+        row["verbalized_parse_status"] for row in cued_flat_rows
+    } == {"not_requested"}
+    assert {
+        row["verbalized_parse_status"] for row in cued_pair_rows
+    } == {"not_requested"}
+    assert [row["spec_hash"] for row in default_rows] == [
+        row["spec_hash"] for row in tuned_rows
+    ]
+    assert [row["prompt_hash"] for row in default_rows] == [
+        row["prompt_hash"] for row in tuned_rows
+    ]
+    with pytest.raises(
+        ValueError,
+        match="max_num_batched_tokens.*max_num_seqs",
+    ):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=tmp_path / "tuned",
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            max_num_batched_tokens=16384,
+            max_num_seqs=64,
+            judge=_FakeJudge(),
+        )
 
 
 def test_fake_backend_runs_both_stages_and_resume_is_idempotent(
@@ -143,6 +357,13 @@ def test_fake_backend_runs_both_stages_and_resume_is_idempotent(
         row["spec"]["model_revision"]
         for row in _read_jsonl(Path(stage_a["raw_records_path"]))
     } == {expected_revision}
+    assert {
+        row["metadata"]["judge_output_parser_version"]
+        for row in _read_jsonl(Path(stage_a["raw_records_path"]))
+    } == {JUDGE_OUTPUT_PARSER_VERSION}
+    assert {
+        row["judge_output_parser_version"] for row in clean_rows
+    } == {JUDGE_OUTPUT_PARSER_VERSION}
     assert {row["ordering"] for row in clean_rows} == {"ab", "ba"}
     assert {row["question_id"] for row in clean_rows} == {"q1", "q2"}
     assert {row["source_row_index"] for row in clean_rows} == {0, 1}
@@ -159,6 +380,109 @@ def test_fake_backend_runs_both_stages_and_resume_is_idempotent(
         for dose in doses
         for ordering in ("ab", "ba")
     }
+
+
+def test_flat_scores_include_each_secondary_channel_verdict(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=1,
+        include_verbalized_confidence=True,
+        judge=_FakeJudge(),
+    )
+    flat_rows = _read_jsonl(Path(summary["uncertainty_scores_path"]))
+    raw_rows = _read_jsonl(Path(summary["raw_records_path"]))
+    pair_rows = _read_jsonl(Path(summary["pair_summary_path"]))
+
+    assert {row["verbalized_verdict"] for row in flat_rows} == {"A"}
+    assert {row["consistency_majority_verdict"] for row in flat_rows} == {"A"}
+    assert summary["verbalized_parse_status_counts"] == {"parsed": 4}
+    assert {
+        row["metadata"]["verbalized_parse_status"] for row in raw_rows
+    } == {"parsed"}
+    assert {row["verbalized_parse_status"] for row in flat_rows} == {"parsed"}
+    assert {row["verbalized_parse_status"] for row in pair_rows} == {"parsed"}
+    assert {
+        row["uncertainty"]["verbalized"]["verdict"] for row in raw_rows
+    } == {"A"}
+
+    for row in raw_rows:
+        row["uncertainty"]["verbalized"].pop("verdict")
+    raw_path = Path(summary["raw_records_path"])
+    raw_path.write_text(
+        "".join(
+            f"{json.dumps(row, sort_keys=True)}\n"
+            for row in raw_rows
+        ),
+        encoding="utf-8",
+    )
+    resumed = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=1,
+        include_verbalized_confidence=True,
+        judge=_FakeJudge(),
+    )
+    resumed_flat_rows = _read_jsonl(Path(resumed["uncertainty_scores_path"]))
+    assert {row["verbalized_verdict"] for row in resumed_flat_rows} == {"A"}
+
+
+@pytest.mark.parametrize(
+    ("raw_output", "expected_status"),
+    (
+        ("", "missing"),
+        ("I cannot provide an atomic confidence answer.", "unparseable"),
+    ),
+)
+def test_fresh_runs_preserve_unavailable_verbalized_channel_status(
+    tmp_path: Path,
+    raw_output: str,
+    expected_status: str,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / expected_status
+    _write_fixture(csv_path)
+
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=True,
+        judge=_UnavailableConfidenceJudge(raw_output),
+    )
+    raw_rows = _read_jsonl(Path(summary["raw_records_path"]))
+    flat_rows = _read_jsonl(Path(summary["uncertainty_scores_path"]))
+    pair_rows = _read_jsonl(Path(summary["pair_summary_path"]))
+
+    assert summary["verbalized_parse_status_counts"] == {
+        expected_status: 4
+    }
+    assert {
+        row["metadata"]["verbalized_parse_status"] for row in raw_rows
+    } == {expected_status}
+    assert {
+        row["verbalized_parse_status"] for row in flat_rows
+    } == {expected_status}
+    assert {
+        row["verbalized_parse_status"] for row in pair_rows
+    } == {expected_status}
+    assert {
+        (
+            row["uncertainty"]["verbalized"]["confidence"],
+            row["uncertainty"]["verbalized"]["uncertainty"],
+            row["uncertainty"]["verbalized"]["verdict"],
+        )
+        for row in raw_rows
+    } == {(None, None, None)}
 
 
 def test_extreme_schedule_skips_middle_doses() -> None:
@@ -245,6 +569,7 @@ def test_resume_rejects_stale_prompt_and_extraction_provenance(
     rows[0]["prompt_hash"] = "stale"
     rows[0]["spec_hash"] = "stale"
     rows[0]["metadata"]["conversation_extraction_mode"] = "stale"
+    rows[0]["metadata"]["judge_output_parser_version"] = "stale"
     raw_path.write_text(
         "".join(f"{json.dumps(row)}\n" for row in rows),
         encoding="utf-8",
@@ -252,7 +577,10 @@ def test_resume_rejects_stale_prompt_and_extraction_provenance(
 
     with pytest.raises(
         ValueError,
-        match="prompt_hash.*spec_hash.*conversation_extraction_mode",
+        match=(
+            "prompt_hash.*spec_hash.*conversation_extraction_mode"
+            ".*judge_output_parser_version"
+        ),
     ):
         run_silent_bias_clean(
             csv_path=csv_path,
@@ -260,6 +588,41 @@ def test_resume_rejects_stale_prompt_and_extraction_provenance(
             model_name="qwen3-4b",
             consistency_runs=0,
             include_verbalized_confidence=False,
+            judge=judge,
+        )
+
+
+def test_resume_rejects_missing_verbalized_parse_status(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    judge = _FakeJudge()
+
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=True,
+        judge=judge,
+    )
+    raw_path = Path(summary["raw_records_path"])
+    rows = _read_jsonl(raw_path)
+    rows[0]["metadata"].pop("verbalized_parse_status")
+    raw_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="verbalized_parse_status"):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=True,
             judge=judge,
         )
 
@@ -294,6 +657,41 @@ def test_resume_rejects_a_different_model_revision(tmp_path: Path) -> None:
             consistency_runs=0,
             include_verbalized_confidence=False,
             judge=judge,
+        )
+
+
+def test_stage_b_rejects_stage_a_summary_from_an_old_output_parser(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        judge=_FakeJudge(),
+    )
+    pair_summary_path = Path(summary["pair_summary_path"])
+    rows = _read_jsonl(pair_summary_path)
+    for row in rows:
+        row.pop("judge_output_parser_version")
+    pair_summary_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="judge_output_parser_version"):
+        run_silent_bias_cued(
+            csv_path=csv_path,
+            stage_a_summary_path=pair_summary_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            judge=_FakeJudge(),
         )
 
 

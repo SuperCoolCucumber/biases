@@ -106,6 +106,20 @@ def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
 
     assert captured["revision"] == profile.revision
     assert captured["tokenizer_revision"] == profile.revision
+    assert "max_num_batched_tokens" not in captured
+    assert "max_num_seqs" not in captured
+
+    captured.clear()
+    judge = position_bias.VLLMJudge(
+        "qwen3-14b",
+        max_num_batched_tokens=32768,
+        max_num_seqs=128,
+    )
+
+    assert captured["max_num_batched_tokens"] == 32768
+    assert captured["max_num_seqs"] == 128
+    assert judge.max_num_batched_tokens == 32768
+    assert judge.max_num_seqs == 128
 
 
 def test_existing_slurm_model_names_remain_registered() -> None:

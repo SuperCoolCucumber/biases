@@ -109,6 +109,22 @@ decision-rule fields recorded by the analysis CSVs. A transferred threshold
 with no accepted test examples has undefined realized risk and is reported as
 unavailable rather than as a guarantee failure.
 
+RQ2 keeps confidence and verdict semantics aligned. MSP is scored against the
+constrained deterministic verdict, consistency agreement against the
+consistency majority verdict, and verbalized confidence against the verdict
+parsed from that same free-generation pass. Rows lacking the corresponding
+secondary verdict are excluded only from that secondary channel. Flip counts
+for threshold transfer compare clean and cued verdicts from the selected
+channel.
+
+ECE, reliability, risk--coverage, and AURC are emitted for each available
+confidence channel. Multiclass Brier score is emitted only for MSP because only
+the constrained-logit pass provides an A/B/tie probability vector; secondary
+channel rows leave `brier` undefined and report `brier_n=0`.
+Calibration summaries also report `total_n`, `missing_n`, and
+`availability_rate` so verbalized parse failures remain visible per condition
+instead of disappearing through complete-case filtering.
+
 The dose-response output retains the raw fitted P25 extrapolation and records
 the tested dose bounds plus `p25_range_status`. Paper assets render an
 out-of-range P25 as below/above the tested ladder instead of presenting an

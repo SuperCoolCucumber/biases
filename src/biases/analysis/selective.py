@@ -43,7 +43,55 @@ class ScoredPrediction:
     clean_tie: bool | None = None
     msp: float | None = None
     consistency_agreement: float | None = None
+    consistency_majority_verdict: str | None = None
     verbalized_confidence: float | None = None
+    verbalized_verdict: str | None = None
+    consistency_flip: bool | None = None
+    verbalized_flip: bool | None = None
+
+
+def scoring_verdict(
+    prediction: ScoredPrediction,
+    confidence_channel: str = "msp",
+) -> str | None:
+    """Return the verdict produced by the same pass as the confidence channel."""
+
+    if confidence_channel not in CONFIDENCE_CHANNELS:
+        raise ValueError(f"unknown confidence channel: {confidence_channel}")
+    if confidence_channel == "consistency_agreement":
+        return normalize_label(prediction.consistency_majority_verdict)
+    if confidence_channel == "verbalized_confidence":
+        return normalize_label(prediction.verbalized_verdict)
+    return normalize_label(prediction.verdict)
+
+
+def channel_flip(
+    prediction: ScoredPrediction,
+    confidence_channel: str = "msp",
+) -> bool | None:
+    """Return the clean-to-cued flip indicator for the selected channel."""
+
+    if confidence_channel not in CONFIDENCE_CHANNELS:
+        raise ValueError(f"unknown confidence channel: {confidence_channel}")
+    if confidence_channel == "consistency_agreement":
+        return prediction.consistency_flip
+    if confidence_channel == "verbalized_confidence":
+        return prediction.verbalized_flip
+    return prediction.flip
+
+
+def paired_channel_flip(
+    clean: ScoredPrediction,
+    cued: ScoredPrediction,
+    confidence_channel: str = "msp",
+) -> bool | None:
+    """Compare clean and cued verdicts produced by one confidence channel."""
+
+    clean_verdict = scoring_verdict(clean, confidence_channel)
+    cued_verdict = scoring_verdict(cued, confidence_channel)
+    if clean_verdict is None or cued_verdict is None:
+        return None
+    return cued_verdict != clean_verdict
 
 
 def confidence_value(
@@ -58,6 +106,8 @@ def confidence_value(
             value = prediction.confidence
     else:
         value = getattr(prediction, confidence_channel)
+    if scoring_verdict(prediction, confidence_channel) is None:
+        return None
     if value is None or not math.isfinite(value):
         return None
     return min(1.0, max(0.0, float(value)))
@@ -67,6 +117,8 @@ def prediction_from_record(
     record: ConditionRecord,
     *,
     flip: bool | None = None,
+    consistency_flip: bool | None = None,
+    verbalized_flip: bool | None = None,
 ) -> ScoredPrediction:
     probs = record.probabilities
     confidence = record.msp if record.msp is not None else (max(probs) if probs else None)
@@ -89,7 +141,11 @@ def prediction_from_record(
         clean_tie=record.clean_tie,
         msp=confidence,
         consistency_agreement=record.consistency_agreement,
+        consistency_majority_verdict=record.consistency_majority_verdict,
         verbalized_confidence=record.verbalized_confidence,
+        verbalized_verdict=record.verbalized_verdict,
+        consistency_flip=consistency_flip,
+        verbalized_flip=verbalized_flip,
     )
 
 
@@ -142,7 +198,12 @@ def reliability_diagram(
     ]
     for prediction in predictions:
         confidence = confidence_value(prediction, confidence_channel)
-        if confidence is None or prediction.human_winner is None:
+        verdict = scoring_verdict(prediction, confidence_channel)
+        if (
+            confidence is None
+            or verdict is None
+            or prediction.human_winner is None
+        ):
             continue
         index = min(n_bins - 1, int(confidence * n_bins))
         buckets[index].append((prediction, confidence))
@@ -163,7 +224,8 @@ def reliability_diagram(
                 ),
                 accuracy=(
                     sum(
-                        item.verdict == item.human_winner
+                        scoring_verdict(item, confidence_channel)
+                        == normalize_label(item.human_winner)
                         for item, _ in bucket
                     )
                     / len(bucket)
@@ -198,9 +260,18 @@ def calibration_summary(
         if valid_n
         else None
     )
-    brier, brier_n = multiclass_brier(predictions)
+    # A multiclass Brier score is defined here only for the constrained-logit
+    # distribution. The consistency and verbalized passes expose scalar
+    # confidence, not a three-class probability vector, so reusing the logit
+    # probabilities would silently mix two different prediction passes.
+    brier, brier_n = (
+        multiclass_brier(predictions)
+        if confidence_channel == "msp"
+        else (None, 0)
+    )
     correct = [
-        prediction.verdict == prediction.human_winner
+        scoring_verdict(prediction, confidence_channel)
+        == normalize_label(prediction.human_winner)
         for prediction in predictions
         if prediction.human_winner is not None
         and confidence_value(prediction, confidence_channel) is not None
@@ -265,7 +336,10 @@ def risk_coverage_curve(
         while cursor < total and ranked[cursor][1] == threshold:
             prediction, _ = ranked[cursor]
             accepted += 1
-            errors += prediction.verdict != prediction.human_winner
+            errors += (
+                scoring_verdict(prediction, confidence_channel)
+                != normalize_label(prediction.human_winner)
+            )
             cursor += 1
         points.append(
             RiskCoveragePoint(
@@ -319,7 +393,7 @@ def _calibration_fingerprint(
         (
             prediction.question_id,
             prediction.record_id,
-            prediction.verdict,
+            scoring_verdict(prediction, confidence_channel),
             prediction.human_winner,
             confidence_value(prediction, confidence_channel),
         )
@@ -487,14 +561,23 @@ def evaluate_threshold_transfer(
         if float(confidence) >= rule.threshold
     ]
     realized = (
-        sum(item.verdict != item.human_winner for item, _ in accepted)
+        sum(
+            scoring_verdict(item, rule.confidence_channel)
+            != normalize_label(item.human_winner)
+            for item, _ in accepted
+        )
         / len(accepted)
         if accepted
         else None
     )
-    flip_rows = [item for item, _ in valid if item.flip is True]
+    flip_rows = [
+        item
+        for item, _ in valid
+        if channel_flip(item, rule.confidence_channel) is True
+    ]
     accepted_flip_count = sum(
-        item.flip is True and float(confidence) >= rule.threshold
+        channel_flip(item, rule.confidence_channel) is True
+        and float(confidence) >= rule.threshold
         for item, confidence in valid
     )
     return ThresholdTransfer(
@@ -595,11 +678,14 @@ def _clustered_transfer_metric_samples(
             prediction = rows[row_index][0]
             error_suffix[row_index] = (
                 error_suffix[row_index + 1]
-                + (prediction.verdict != prediction.human_winner)
+                + (
+                    scoring_verdict(prediction, confidence_channel)
+                    != normalize_label(prediction.human_winner)
+                )
             )
             accepted_flip_suffix[row_index] = (
                 accepted_flip_suffix[row_index + 1]
-                + (prediction.flip is True)
+                + (channel_flip(prediction, confidence_channel) is True)
             )
 
         multiplicity = draws.draw_counts[:, cluster_index].astype(
@@ -609,7 +695,8 @@ def _clustered_transfer_metric_samples(
         accepted += multiplicity * accepted_by_threshold
         errors += multiplicity * error_suffix[first_accepted]
         cluster_flips = sum(
-            prediction.flip is True for prediction, _ in rows
+            channel_flip(prediction, confidence_channel) is True
+            for prediction, _ in rows
         )
         flips += multiplicity * cluster_flips
         accepted_flips += (

@@ -190,3 +190,39 @@ question IDs occur in both calibration and test. Preserve it for the primary
 analysis as required by `docs/experiment_plan.md`, but report this dependence
 prominently and add a question-disjoint robustness analysis before claiming
 transfer to unseen questions.
+
+## 2026-07-29 RQ2 Channel-Semantics Correction
+
+RQ2 secondary confidence channels now use the verdict from the same inference
+pass. Consistency agreement is scored against its sampled majority verdict and
+verbalized confidence against its free-pass verdict; neither silently falls
+back to the constrained deterministic verdict when its own verdict is missing.
+Accepted-flip fractions are also channel-specific for single-ordering analyses.
+MSP, the preregistered primary channel, remains tied to the constrained
+deterministic verdict and is unchanged.
+
+The raw run records preserve both secondary raw outputs and verdicts. Derived
+flat score files now expose `consistency_majority_verdict` and
+`verbalized_verdict`. Current-parser raw records can be rematerialized without
+GPU inference. Older records require an explicit migration that reparses the
+stored raw output before assigning the current parser version; ordinary resume
+correctly rejects them. Legacy flat files without a recoverable secondary
+verdict remain usable for MSP and RQ1 uncertainty shifts, but that secondary
+RQ2 channel is reported unavailable.
+
+## 2026-07-29 Parser and Artifact Integrity Gate
+
+Judge-output parsing is versioned as `strict_v2`. Deterministic constrained
+outputs must agree with the aggregated A/B/tie probability MAP, while
+verbalized outputs must contain an unambiguous verdict and confidence in the
+declared two-line format. The verdict-extraction smoke artifact now checks the
+same 20 prompts under constrained decoding and native greedy decoding before a
+model can enter a full run.
+
+Use `scripts/migrate_silent_bias_parser.py` to reparse pre-versioned stored raw
+outputs and rematerialize their flat scores and pair summaries; in-place mode
+requires backups. Use `scripts/validate_silent_bias_artifacts.py` after both
+stages to verify the exact experimental grid, linkage and provenance fields,
+and all parser-derived uncertainty values against their stored primitives.
+vLLM scheduler overrides are optional, recorded throughout the artifact
+bundle, and must match on resume.

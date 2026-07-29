@@ -148,6 +148,22 @@ maximum coverage whose empirical risk is no greater than each target:
 - primary target risk: 10%;
 - confirmatory target risk: 20%.
 
+Each confidence channel is scored against the verdict produced by the same
+inference pass: MSP against the constrained deterministic verdict, consistency
+agreement against the consistency majority verdict, and verbalized confidence
+against the free verbalized-pass verdict. A secondary-channel observation with
+an unparseable or missing same-pass verdict is unavailable for that channel and
+is never silently scored against the deterministic verdict. Secondary-channel
+accepted-flip fractions likewise compare the matching clean and cued
+same-pass verdicts; the primary MSP flip definition is unchanged.
+
+The pilot gate requires complete constrained-logit and scheduled-consistency
+channels. Verbalized verdict/confidence parsing must succeed on at least 99% of
+pilot records per model; failures are retained as explicit missing secondary
+observations and their rate is reported by condition. A model below 99% must
+have its verbalized prompt or parser contract corrected and rerun on the pilot
+before full inference.
+
 Resolve threshold ties by choosing the stricter threshold. Freeze each
 model/ordering threshold, then evaluate clean and every cued condition on the
 test split.
@@ -178,10 +194,13 @@ failure or survival, even if some recalibrated bootstrap draws have nonzero
 coverage. Alternate confidence channels remain secondary and are excluded from
 the MSP primary Holm family.
 
-Compute ECE, Brier score, reliability diagrams, risk--coverage curves, and
-AURC for every condition. Use deterministic confidence bins declared in the
-analysis config. The standard mitigation baseline is swap averaging over AB/BA
-with the same clean-calibrated abstention rule and tie policy.
+Compute ECE, reliability diagrams, risk--coverage curves, and AURC for every
+available confidence channel and condition. Compute multiclass Brier score only
+for MSP, whose constrained-logit pass supplies the required A/B/tie
+probability vector; do not attach that vector to consistency or verbalized
+predictions. Use deterministic confidence bins declared in the analysis
+config. The standard mitigation baseline is swap averaging over AB/BA with the
+same clean-calibrated abstention rule and tie policy.
 
 ## RQ3: Dose--Response
 
@@ -235,11 +254,20 @@ Write generated datasets, run outputs, analyses, figures, and tables below
 
 Before a full run:
 
-1. Validate first-verdict extraction on 20 pilot examples per model with at
-   least 99% parseable verdicts.
+1. Require a passing 20-example verdict-extraction artifact per model. Every
+   constrained raw output must reparse to its returned deterministic MAP
+   verdict with valid `A`/`B`/`tie` probability support. On the exact same
+   prompts, the unconstrained greedy native contract rate must be at least
+   99%: the output is parseable, its first generated token is a declared
+   verdict token, and its verdict agrees with the constrained verdict.
 2. Complete both stages on all 198 pilot rows in both orderings.
-3. Verify every cued record has exactly one clean partner and ordering twin.
-4. Verify the estimator count matches the submitted run configuration.
-5. Regenerate paper assets twice and require byte-identical outputs.
-6. Record the Git commit, environment versions, model revisions, dataset
-   hashes, spec hash, and chosen consistency schedule.
+3. Require every raw and flat pilot row to carry the current judge-output
+   parser version. An explicit migration from an older parser must reparse the
+   stored raw outputs before stamping the new version.
+4. Verify every cued record has exactly one clean partner and ordering twin.
+5. Recompute logit, verbalized, and consistency metrics from their primitive
+   raw fields and reject semantic mismatches.
+6. Verify the estimator count matches the submitted run configuration.
+7. Regenerate paper assets twice and require byte-identical outputs.
+8. Record the Git commit, environment versions, model revisions, dataset
+   hashes, spec hash, parser version, and chosen consistency schedule.

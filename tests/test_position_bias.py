@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 
 import pytest
 
+from biases import position_bias
 from biases.position_bias import (
     QwenJudge,
     _extract_conversation_pair,
     _parse_conversation,
     load_position_pairs,
+    parse_verbalized_output,
 )
 from biases.position_prompts import build_position_prompt_package
 from biases.schemas import OutputMode, VerdictLabel
@@ -333,6 +336,243 @@ def test_label_probs_are_aggregated_from_decision_token_ids() -> None:
     assert abs(sum(probs.values()) - 1.0) < 1e-9
 
 
-def test_parse_confidence_accepts_expected_two_line_format() -> None:
-    assert QwenJudge._parse_confidence("A\nConfidence: 87") == 87.0
-    assert QwenJudge._parse_confidence("B\nconfidence = 100") == 100.0
+def test_deterministic_verdict_rejects_split_surface_token_mass_mismatch() -> None:
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.decision_token_id_to_label = {
+        10: "A",
+        11: "A",
+        20: "B",
+        30: "tie",
+    }
+    probabilities = judge._extract_label_probs(
+        {
+            10: _Logprob("A", math.log(0.30)),
+            11: _Logprob(" A", math.log(0.30)),
+            20: _Logprob("B", math.log(0.39)),
+            30: _Logprob("T", math.log(0.01)),
+        }
+    )
+    assert probabilities["A"] > probabilities["B"]
+
+    with pytest.raises(
+        RuntimeError,
+        match="token verdict 'B'.*label-probability MAP 'A'",
+    ):
+        judge._resolve_constrained_verdict(
+            raw_text="B",
+            probabilities=probabilities,
+            sampling_temperature=0.0,
+        )
+
+
+def test_constrained_verdict_returns_map_only_for_deterministic_calls() -> None:
+    probabilities = {"A": 0.6, "B": 0.35, "tie": 0.05}
+
+    deterministic = QwenJudge._resolve_constrained_verdict(
+        raw_text="A",
+        probabilities=probabilities,
+        sampling_temperature=0.0,
+    )
+    sampled = QwenJudge._resolve_constrained_verdict(
+        raw_text="B",
+        probabilities=probabilities,
+        sampling_temperature=0.7,
+    )
+
+    assert deterministic == VerdictLabel.A
+    assert sampled == VerdictLabel.B
+
+
+@pytest.mark.parametrize("sampling_temperature", (0.0, 0.7))
+def test_constrained_verdict_rejects_unparseable_emitted_text(
+    sampling_temperature: float,
+) -> None:
+    with pytest.raises(ValueError, match="not an unambiguous verdict"):
+        QwenJudge._resolve_constrained_verdict(
+            raw_text="Answer A is probably best",
+            probabilities={"A": 0.6, "B": 0.35, "tie": 0.05},
+            sampling_temperature=sampling_temperature,
+        )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("A", VerdictLabel.A),
+        ("b\nConfidence: 80", VerdictLabel.B),
+        ("T", VerdictLabel.TIE),
+        ("tie\n\n85", VerdictLabel.TIE),
+        ("Verdict: A", VerdictLabel.A),
+        ("Answer: B", VerdictLabel.B),
+        ("Response: T", VerdictLabel.TIE),
+        ("Choice = tie", VerdictLabel.TIE),
+        ("Label: [A]", VerdictLabel.A),
+        ("[[B]]", VerdictLabel.B),
+        ("[T]", VerdictLabel.TIE),
+    ),
+)
+def test_parse_verdict_accepts_only_supported_explicit_forms(
+    text: str,
+    expected: VerdictLabel,
+) -> None:
+    assert QwenJudge._parse_verdict_text(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "",
+        "Answer A is stronger.",
+        "Because B is more complete.",
+        "This is a tie.",
+        "A response might be correct.",
+        "Verdict: A or B",
+        "I choose [[A]].",
+        "[[A]] and [[B]]",
+        "Confidence: 80",
+    ),
+)
+def test_parse_verdict_rejects_prose_and_ambiguous_forms(text: str) -> None:
+    assert QwenJudge._parse_verdict_text(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_verdict", "expected_confidence"),
+    (
+        ("A\nConfidence: 95", VerdictLabel.A, 95.0),
+        ("[[B]]\n72.5", VerdictLabel.B, 72.5),
+        (
+            "Verdict: T\nConfidence = 80\nA short rationale follows.",
+            VerdictLabel.TIE,
+            80.0,
+        ),
+        ("A 95", VerdictLabel.A, 95.0),
+        ("T Confidence: 80", VerdictLabel.TIE, 80.0),
+        ("[B] 67.5%", VerdictLabel.B, 67.5),
+    ),
+)
+def test_joint_verbalized_parser_accepts_only_atomic_pairs(
+    text: str,
+    expected_verdict: VerdictLabel,
+    expected_confidence: float,
+) -> None:
+    assert parse_verbalized_output(text) == (
+        expected_verdict,
+        expected_confidence,
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "Confidence: 95",
+        "A\n70% of annotators preferred answer B.",
+        "Answer A: it scored 95 on the rubric.",
+        "A\nThe rubric has 7 criteria.\n95",
+        "A\nReasoning line\nConfidence: 95",
+        "A 95 because it is clearer",
+        "A\nConfidence: 85\nB",
+        "A\nConfidence: 85\nConfidence: 90",
+    ),
+)
+def test_joint_verbalized_parser_rejects_partial_prose_or_conflicts(
+    text: str,
+) -> None:
+    assert parse_verbalized_output(text) == (None, None)
+
+
+def test_verbalized_generation_paths_use_the_joint_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SamplingParams:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class _Completion:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class _RequestOutput:
+        def __init__(self, text: str) -> None:
+            self.outputs = [_Completion(text)]
+
+    class _Model:
+        responses: list[str] = []
+
+        def generate(
+            self,
+            prompts: list[str],
+            _sampling_params: object,
+            *,
+            use_tqdm: bool,
+        ) -> list[_RequestOutput]:
+            assert use_tqdm is False
+            assert len(prompts) == len(self.responses)
+            return [_RequestOutput(text) for text in self.responses]
+
+    class _Profile:
+        stop_token_texts: tuple[str, ...] = ()
+
+        @staticmethod
+        def prepare_legacy_prompt(prompt: str) -> str:
+            return prompt
+
+    monkeypatch.setattr(position_bias, "SamplingParams", _SamplingParams)
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.model = _Model()
+    judge.profile = _Profile()
+
+    judge.model.responses = ["A\n70% of annotators preferred answer B."]
+    assert judge.verbalize_confidence("prompt") == (
+        None,
+        "A\n70% of annotators preferred answer B.",
+        None,
+    )
+
+    judge.model.responses = ["B\nConfidence: 88\nbrief rationale", "Answer A: 95"]
+    assert judge.verbalize_confidence_batch(["one", "two"]) == [
+        (VerdictLabel.B, "B\nConfidence: 88\nbrief rationale", 88.0),
+        (None, "Answer A: 95", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("A\nConfidence: 87", 87.0),
+        ("B\nconfidence = 100", 100.0),
+        ("A\n\n85", 85.0),
+        ("[[B]]\n72.5", 72.5),
+        ("Verdict: T\n0", 0.0),
+        ("A\nConfidence: 99.5%", 99.5),
+        ("A\nConfidence: 85\nextra explanation", 85.0),
+    ),
+)
+def test_parse_confidence_accepts_explicit_or_bare_post_verdict_values(
+    text: str,
+    expected: float,
+) -> None:
+    assert QwenJudge._parse_confidence(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "Confidence: 80",
+        "Answer A had score 87",
+        "A\nThere were 2 candidates and I am 85 percent confident",
+        "A\nReasoning\n85",
+        "A\nReasoning\nConfidence: 85",
+        "A\n101",
+        "A\n-1",
+        "A\n85 points",
+        "A\n85\n90",
+        "A\nConfidence: 101",
+        "A\nConfidence: -1",
+        "A\nconfidence is 85",
+        "A\nConfidence: 85\nConfidence: 85",
+        "A\nConfidence: 85\nConfidence: 90",
+    ),
+)
+def test_parse_confidence_rejects_arbitrary_or_ambiguous_numbers(text: str) -> None:
+    assert QwenJudge._parse_confidence(text) is None

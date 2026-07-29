@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from biases.models import get_model_profile
 from biases.paths import configure_artifact_environment, data_path
@@ -43,6 +43,13 @@ except ImportError:  # pragma: no cover
 DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-14B-Instruct"
 DEFAULT_DATA_PATH = data_path("processed", "mtbench_full.csv")
 DEFAULT_MAX_MODEL_LEN = 8192
+JUDGE_OUTPUT_PARSER_VERSION = "strict_v2"
+VerbalizedParseStatus = Literal[
+    "parsed",
+    "missing",
+    "unparseable",
+    "not_requested",
+]
 UNCERTAINTY_METHODS = [
     "logit",
     "verbalized_confidence",
@@ -556,6 +563,147 @@ def _normalize_probs(probs: dict[str, float]) -> dict[str, float]:
     return {label: value / total for label, value in probs.items()}
 
 
+def _parse_verdict_atom(text: str) -> VerdictLabel | None:
+    bracketed = re.fullmatch(
+        r"(?:\[\[\s*(A|B|T|TIE)\s*\]\]|\[\s*(A|B|T|TIE)\s*\])",
+        text.strip(),
+        re.IGNORECASE,
+    )
+    if bracketed is not None:
+        normalized = next(
+            group.upper() for group in bracketed.groups() if group is not None
+        )
+    else:
+        bare = re.fullmatch(
+            r"(A|B|T|TIE)\s*[.!]?",
+            text.strip(),
+            re.IGNORECASE,
+        )
+        if bare is None:
+            return None
+        normalized = bare.group(1).upper()
+    return {
+        "A": VerdictLabel.A,
+        "B": VerdictLabel.B,
+        "T": VerdictLabel.TIE,
+        "TIE": VerdictLabel.TIE,
+    }[normalized]
+
+
+def _parse_verdict_line(text: str) -> VerdictLabel | None:
+    explicit = re.fullmatch(
+        r"(?:verdict|answer|response|choice|label)\s*[:=]\s*(.+)",
+        text.strip(),
+        re.IGNORECASE,
+    )
+    verdict_atom = explicit.group(1).strip() if explicit is not None else text
+    return _parse_verdict_atom(verdict_atom)
+
+
+def _parse_confidence_line(
+    text: str,
+    *,
+    allow_bare: bool,
+) -> float | None:
+    explicit = re.fullmatch(
+        r"confidence\s*[:=]\s*(\d+(?:\.\d+)?)\s*%?",
+        text.strip(),
+        re.IGNORECASE,
+    )
+    bare = (
+        re.fullmatch(r"(\d+(?:\.\d+)?)\s*%?", text.strip())
+        if allow_bare
+        else None
+    )
+    match = explicit or bare
+    if match is None:
+        return None
+    value = float(match.group(1))
+    return value if 0.0 <= value <= 100.0 else None
+
+
+def _has_trailing_verdict_or_confidence(lines: list[str]) -> bool:
+    for line in lines:
+        if _parse_verdict_line(line) is not None:
+            return True
+        if _parse_confidence_line(line, allow_bare=True) is not None:
+            return True
+        if re.match(r"^confidence\b", line, re.IGNORECASE) is not None:
+            return True
+    return False
+
+
+def parse_verbalized_output(
+    text: str,
+) -> tuple[VerdictLabel | None, float | None]:
+    """Parse one atomic verdict-confidence pair from strict output forms."""
+
+    nonempty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not nonempty_lines:
+        return None, None
+
+    if len(nonempty_lines) >= 2:
+        verdict = _parse_verdict_line(nonempty_lines[0])
+        confidence = _parse_confidence_line(
+            nonempty_lines[1],
+            allow_bare=True,
+        )
+        if (
+            verdict is not None
+            and confidence is not None
+            and not _has_trailing_verdict_or_confidence(nonempty_lines[2:])
+        ):
+            return verdict, confidence
+
+    single_line = re.fullmatch(
+        r"(?P<verdict>"
+        r"(?:A|B|T|TIE)\s*[.!]?|"
+        r"\[\[\s*(?:A|B|T|TIE)\s*\]\]|"
+        r"\[\s*(?:A|B|T|TIE)\s*\]"
+        r")\s+"
+        r"(?P<confidence>"
+        r"(?:confidence\s*[:=]\s*)?\d+(?:\.\d+)?\s*%?"
+        r")",
+        nonempty_lines[0],
+        re.IGNORECASE,
+    )
+    if single_line is None:
+        return None, None
+    verdict = _parse_verdict_atom(single_line.group("verdict"))
+    confidence = _parse_confidence_line(
+        single_line.group("confidence"),
+        allow_bare=True,
+    )
+    if verdict is None or confidence is None:
+        return None, None
+    if _has_trailing_verdict_or_confidence(nonempty_lines[1:]):
+        return None, None
+    return verdict, confidence
+
+
+def verbalized_parse_status(
+    *,
+    uncertainty_methods: list[str],
+    raw_output: object,
+) -> VerbalizedParseStatus:
+    """Classify availability of the optional verbalized-confidence channel."""
+
+    if "verbalized_confidence" not in uncertainty_methods:
+        return "not_requested"
+    if raw_output is None or raw_output == "":
+        return "missing"
+    if not isinstance(raw_output, str):
+        return "unparseable"
+    if not raw_output.strip():
+        return "missing"
+    verdict, confidence = parse_verbalized_output(raw_output)
+    return (
+        "parsed"
+        if verdict is not None and confidence is not None
+        else "unparseable"
+    )
+
+
 class VLLMJudge:
     def __init__(
         self,
@@ -564,31 +712,44 @@ class VLLMJudge:
         max_model_len: int = DEFAULT_MAX_MODEL_LEN,
         gpu_memory_utilization: float = 0.9,
         dtype: str = "auto",
+        max_num_batched_tokens: int | None = None,
+        max_num_seqs: int | None = None,
     ) -> None:
         if LLM is None or SamplingParams is None:
             raise RuntimeError(
                 "vLLM execution requires the 'local' extra. Install with `uv sync --extra local`."
             )
+        if max_num_batched_tokens is not None and max_num_batched_tokens < 1:
+            raise ValueError("max_num_batched_tokens must be positive when provided")
+        if max_num_seqs is not None and max_num_seqs < 1:
+            raise ValueError("max_num_seqs must be positive when provided")
 
         self.profile = get_model_profile(model_name)
         self.model_name = self.profile.hf_model_name
         self.require_label_logprobs = True
+        self.max_num_batched_tokens = max_num_batched_tokens
+        self.max_num_seqs = max_num_seqs
         disable_custom_all_reduce = os.environ.get("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "").lower()
         disable_custom_all_reduce = disable_custom_all_reduce in {"1", "true", "yes", "on"}
         enforce_eager = os.environ.get("BIASES_VLLM_ENFORCE_EAGER", "").lower()
         enforce_eager = enforce_eager in {"1", "true", "yes", "on"}
-        self.model = LLM(
-            model=self.model_name,
-            revision=self.profile.revision,
-            tokenizer_revision=self.profile.revision,
-            tensor_parallel_size=tensor_parallel_size,
-            max_model_len=max_model_len,
-            trust_remote_code=True,
-            gpu_memory_utilization=gpu_memory_utilization,
-            dtype=dtype,
-            disable_custom_all_reduce=disable_custom_all_reduce,
-            enforce_eager=enforce_eager,
-        )
+        llm_kwargs: dict[str, Any] = {
+            "model": self.model_name,
+            "revision": self.profile.revision,
+            "tokenizer_revision": self.profile.revision,
+            "tensor_parallel_size": tensor_parallel_size,
+            "max_model_len": max_model_len,
+            "trust_remote_code": True,
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "dtype": dtype,
+            "disable_custom_all_reduce": disable_custom_all_reduce,
+            "enforce_eager": enforce_eager,
+        }
+        if max_num_batched_tokens is not None:
+            llm_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
+        if max_num_seqs is not None:
+            llm_kwargs["max_num_seqs"] = max_num_seqs
+        self.model = LLM(**llm_kwargs)
         self.tokenizer = self._get_tokenizer()
         (
             self.decision_label_token_ids,
@@ -693,26 +854,49 @@ class VLLMJudge:
 
     @staticmethod
     def _parse_verdict_text(text: str) -> VerdictLabel | None:
-        normalized = text.strip().upper()
-        if normalized.startswith("A"):
-            return VerdictLabel.A
-        if normalized.startswith("B"):
-            return VerdictLabel.B
-        if normalized.startswith("T"):
-            return VerdictLabel.TIE
-        return None
+        first_line = next(
+            (line.strip() for line in text.splitlines() if line.strip()),
+            "",
+        )
+        return _parse_verdict_line(first_line)
 
     @staticmethod
     def _parse_confidence(text: str) -> float | None:
-        match = re.search(r"confidence\s*[:=]\s*(100(?:\.0+)?|\d{1,2}(?:\.\d+)?)", text, re.I)
-        if match is None:
-            numbers = re.findall(r"\b(100(?:\.0+)?|\d{1,2}(?:\.\d+)?)\b", text)
-            if not numbers:
-                return None
-            value = float(numbers[-1])
-        else:
-            value = float(match.group(1))
-        return max(0.0, min(100.0, value))
+        return parse_verbalized_output(text)[1]
+
+    @classmethod
+    def _resolve_constrained_verdict(
+        cls,
+        *,
+        raw_text: str,
+        probabilities: dict[str, float],
+        sampling_temperature: float,
+    ) -> VerdictLabel:
+        raw_verdict = cls._parse_verdict_text(raw_text)
+        probability_verdict: VerdictLabel | None = None
+        if probabilities:
+            winner = max(probabilities, key=probabilities.get)
+            probability_verdict = {
+                "A": VerdictLabel.A,
+                "B": VerdictLabel.B,
+                "tie": VerdictLabel.TIE,
+            }[winner]
+
+        if raw_verdict is None:
+            raise ValueError(
+                "Constrained judge output is not an unambiguous verdict under "
+                f"{JUDGE_OUTPUT_PARSER_VERSION}: {raw_text!r}"
+            )
+        if sampling_temperature == 0.0 and probability_verdict is not None:
+            if raw_verdict != probability_verdict:
+                raise RuntimeError(
+                    "Deterministic constrained token verdict "
+                    f"{raw_verdict.value!r} disagrees with aggregated "
+                    f"label-probability MAP {probability_verdict.value!r}; "
+                    "MSP would not describe the stored verdict."
+                )
+            return probability_verdict
+        return raw_verdict
 
     def choose_verdict(
         self,
@@ -736,12 +920,11 @@ class VLLMJudge:
         raw_text = completion.text
         probs = self._extract_label_probs(completion.logprobs[0] if completion.logprobs else None)
 
-        verdict = self._parse_verdict_text(raw_text)
-        if verdict is None and probs:
-            winner = max(probs, key=probs.get)
-            verdict = {"A": VerdictLabel.A, "B": VerdictLabel.B, "tie": VerdictLabel.TIE}[winner]
-        if verdict is None:
-            raise ValueError(f"Could not parse judge output {completion.text!r}")
+        verdict = self._resolve_constrained_verdict(
+            raw_text=raw_text,
+            probabilities=probs,
+            sampling_temperature=sampling_temperature,
+        )
 
         if not probs and getattr(self, "require_label_logprobs", True):
             raise RuntimeError(
@@ -783,16 +966,11 @@ class VLLMJudge:
             probs = self._extract_label_probs(
                 completion.logprobs[0] if completion.logprobs else None
             )
-            verdict = self._parse_verdict_text(raw_text)
-            if verdict is None and probs:
-                winner = max(probs, key=probs.get)
-                verdict = {
-                    "A": VerdictLabel.A,
-                    "B": VerdictLabel.B,
-                    "tie": VerdictLabel.TIE,
-                }[winner]
-            if verdict is None:
-                raise ValueError(f"Could not parse judge output {raw_text!r}")
+            verdict = self._resolve_constrained_verdict(
+                raw_text=raw_text,
+                probabilities=probs,
+                sampling_temperature=sampling_temperature,
+            )
             if not probs:
                 raise RuntimeError(
                     "vLLM did not return constrained first-token log probabilities; "
@@ -818,10 +996,11 @@ class VLLMJudge:
         prompt_text = self._prepare_prompt(prompt_text)
         output = self.model.generate([prompt_text], sampling_params, use_tqdm=False)[0]
         raw_text = output.outputs[0].text.strip()
+        verdict, confidence = parse_verbalized_output(raw_text)
         return (
-            self._parse_verdict_text(raw_text),
+            verdict,
             raw_text,
-            self._parse_confidence(raw_text),
+            confidence,
         )
 
     def verbalize_confidence_batch(
@@ -842,14 +1021,12 @@ class VLLMJudge:
         )
         prepared = [self._prepare_prompt(prompt) for prompt in prompt_texts]
         outputs = self.model.generate(prepared, sampling_params, use_tqdm=False)
-        return [
-            (
-                self._parse_verdict_text(output.outputs[0].text.strip()),
-                output.outputs[0].text.strip(),
-                self._parse_confidence(output.outputs[0].text.strip()),
-            )
-            for output in outputs
-        ]
+        results: list[tuple[VerdictLabel | None, str, float | None]] = []
+        for output in outputs:
+            raw_text = output.outputs[0].text.strip()
+            verdict, confidence = parse_verbalized_output(raw_text)
+            results.append((verdict, raw_text, confidence))
+        return results
 
 
 QwenJudge = VLLMJudge
@@ -918,7 +1095,10 @@ def _build_run_record(
 ) -> RunRecord:
     uncertainty = UncertaintyBundle(
         logit=LogitMetrics.from_probs(label_probs),
-        verbalized=VerbalizedMetrics.from_confidence(verbalized_confidence),
+        verbalized=VerbalizedMetrics.from_confidence(
+            verbalized_confidence,
+            verdict=verbalized_verdict,
+        ),
         consistency=consistency,
     )
     record_identity = {
@@ -969,6 +1149,11 @@ def _build_run_record(
             "prompt_preview": prompt_text[:200],
             "decision_token_index": 0,
             "decision_token_labels": ["A", "B", "T"],
+            "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+            "verbalized_parse_status": verbalized_parse_status(
+                uncertainty_methods=spec.uncertainty_methods,
+                raw_output=verbalized_raw_output,
+            ),
             "verbalized_verdict": _label_to_str(verbalized_verdict),
             "verbalized_raw_output": verbalized_raw_output,
             "verbalized_prompt_hash": verbalized_prompt_hash,
@@ -1083,6 +1268,10 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         "margin": logit.margin,
         "verbalized_confidence": verbalized.confidence,
         "verbalized_uncertainty": verbalized.uncertainty,
+        "verbalized_verdict": (
+            _label_to_str(verbalized.verdict)
+            or record.metadata.get("verbalized_verdict")
+        ),
         "consistency_agreement_rate": consistency.agreement_rate if consistency else None,
         "consistency_vote_entropy": consistency.vote_entropy if consistency else None,
         "consistency_unique_verdict_count": consistency.unique_verdict_count if consistency else None,
@@ -1093,6 +1282,14 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         ),
         "decision_token_index": record.metadata.get("decision_token_index"),
         "decision_token_labels": record.metadata.get("decision_token_labels"),
+        "judge_output_parser_version": record.metadata.get(
+            "judge_output_parser_version"
+        ),
+        "verbalized_parse_status": record.metadata.get(
+            "verbalized_parse_status"
+        ),
+        "max_num_batched_tokens": record.metadata.get("max_num_batched_tokens"),
+        "max_num_seqs": record.metadata.get("max_num_seqs"),
     }
 
 
