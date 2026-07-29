@@ -21,6 +21,7 @@ class ModelProfile:
     registry_name: str
     hf_model_name: str
     family: str
+    revision: str | None = None
     chat_template: ChatTemplatePolicy = ChatTemplatePolicy.TOKENIZER
     verdict_token_texts: Mapping[str, tuple[str, ...]] = field(
         default_factory=lambda: DEFAULT_VERDICT_TOKEN_TEXTS
@@ -100,6 +101,7 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         registry_name="qwen3-4b",
         hf_model_name="Qwen/Qwen3-4B",
         family="qwen3",
+        revision="1cfa9a7208912126459214e8b04321603b3df60c",
         assistant_prefill="<think>\n\n</think>\n\n",
         stop_token_texts=("<|im_end|>",),
     ),
@@ -107,6 +109,7 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         registry_name="qwen3-14b",
         hf_model_name="Qwen/Qwen3-14B",
         family="qwen3",
+        revision="40c069824f4251a91eefaf281ebe4c544efd3e18",
         assistant_prefill="<think>\n\n</think>\n\n",
         stop_token_texts=("<|im_end|>",),
     ),
@@ -163,12 +166,14 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         registry_name="mistral-7b-instruct-v0.3",
         hf_model_name="mistralai/Mistral-7B-Instruct-v0.3",
         family="mistral",
+        revision="c170c708c41dac9275d15a8fff4eca08d52bab71",
         stop_token_texts=("</s>",),
     ),
     "skywork-critic-8b": ModelProfile(
         registry_name="skywork-critic-8b",
         hf_model_name="Skywork/Skywork-Critic-Llama-3.1-8B",
         family="llama3",
+        revision="825f34599593c0145be91644be233d5c634b2380",
         stop_token_texts=("<|eot_id|>",),
     ),
 }

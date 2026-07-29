@@ -457,6 +457,8 @@ class VLLMJudge:
         enforce_eager = enforce_eager in {"1", "true", "yes", "on"}
         self.model = LLM(
             model=self.model_name,
+            revision=self.profile.revision,
+            tokenizer_revision=self.profile.revision,
             tensor_parallel_size=tensor_parallel_size,
             max_model_len=max_model_len,
             trust_remote_code=True,

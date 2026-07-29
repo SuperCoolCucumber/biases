@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from biases import position_bias
 from biases.models import available_model_names, get_model_profile
 
 
@@ -65,6 +66,46 @@ def test_required_paper_model_families_are_registered() -> None:
     names = set(available_model_names())
     assert {"qwen3-4b", "qwen3-14b", "gemma2-9b-it"}.issubset(names)
     assert "mistral-7b-instruct-v0.3" in names
+
+
+def test_full_run_models_pin_hugging_face_revisions() -> None:
+    model_names = (
+        "qwen3-4b",
+        "qwen3-14b",
+        "mistral-7b-instruct-v0.3",
+        "skywork-critic-8b",
+    )
+    for model_name in model_names:
+        revision = get_model_profile(model_name).revision
+        assert revision is not None
+        assert len(revision) == 40
+
+
+def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _DecisionTokenizer:
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            assert add_special_tokens is False
+            return [ord(text.strip())]
+
+    class _FakeLLM:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def get_tokenizer(self) -> _DecisionTokenizer:
+            return _DecisionTokenizer()
+
+    monkeypatch.setattr(position_bias, "LLM", _FakeLLM)
+    monkeypatch.setattr(position_bias, "SamplingParams", object())
+
+    profile = get_model_profile("qwen3-14b")
+    position_bias.VLLMJudge("qwen3-14b")
+
+    assert captured["revision"] == profile.revision
+    assert captured["tokenizer_revision"] == profile.revision
 
 
 def test_existing_slurm_model_names_remain_registered() -> None:
