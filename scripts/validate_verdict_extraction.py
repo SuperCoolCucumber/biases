@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -22,7 +23,6 @@ from biases.social_cue_prompts import (
     build_social_cue_prompt_package,
     format_clean_variant_id,
 )
-from biases.utils import stable_hash
 
 
 DEFAULT_DATA_PATH = data_path("processed", "mtbench_stratified_198.csv")
@@ -133,7 +133,13 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
         "model_revision": profile.revision,
         "data_path": str(args.data_path),
         "input_file_hash": file_sha256(args.data_path),
-        "prompt_set_hash": stable_hash(prompt_hashes),
+        "prompt_set_hash": hashlib.sha256(
+            json.dumps(
+                prompt_hashes,
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
         "resolved_verdict_token_ids": judge.decision_label_token_ids,
         **validation,
     }
