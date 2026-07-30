@@ -160,15 +160,37 @@ def compute_paired_shifts(pairs: Sequence[PairedCondition]) -> tuple[PairedShift
 def roc_auc(labels: Sequence[bool | int], scores: Sequence[float]) -> float | None:
     if len(labels) != len(scores):
         raise ValueError("labels and scores must have the same length")
-    positives = [float(score) for label, score in zip(labels, scores, strict=True) if bool(label)]
-    negatives = [float(score) for label, score in zip(labels, scores, strict=True) if not bool(label)]
-    if not positives or not negatives:
+    observations = [
+        (float(score), bool(label))
+        for label, score in zip(labels, scores, strict=True)
+    ]
+    positive_count = sum(label for _, label in observations)
+    negative_count = len(observations) - positive_count
+    if positive_count == 0 or negative_count == 0:
         return None
-    wins = 0.0
-    for positive in positives:
-        for negative in negatives:
-            wins += float(positive > negative) + 0.5 * float(positive == negative)
-    return wins / (len(positives) * len(negatives))
+
+    ranked = sorted(
+        (score, label)
+        for score, label in observations
+        if not math.isnan(score)
+    )
+    twice_wins = 0
+    negatives_below = 0
+    index = 0
+    while index < len(ranked):
+        score = ranked[index][0]
+        group_end = index + 1
+        while group_end < len(ranked) and ranked[group_end][0] == score:
+            group_end += 1
+        group = ranked[index:group_end]
+        group_positives = sum(label for _, label in group)
+        group_negatives = len(group) - group_positives
+        twice_wins += group_positives * (
+            2 * negatives_below + group_negatives
+        )
+        negatives_below += group_negatives
+        index = group_end
+    return twice_wins / (2 * positive_count * negative_count)
 
 
 def shift_metric_value(shift: PairedShift, metric: str) -> float | None:

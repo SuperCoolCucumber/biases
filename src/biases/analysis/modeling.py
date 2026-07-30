@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 import math
+import multiprocessing
+import random
 from typing import Any
 import warnings
 
@@ -59,6 +62,151 @@ class UncertaintyGEEResult:
     slope_p_value_one_sided: float
     converged: bool
     warnings: tuple[str, ...] = ()
+
+
+ClusterIndexDraw = tuple[int, ...]
+ClusteredUncertaintyRows = tuple[
+    tuple[tuple[float, float], ...],
+    ...,
+]
+
+
+def _cluster_index_draws(
+    *,
+    n_clusters: int,
+    n_resamples: int,
+    seed: int,
+) -> tuple[ClusterIndexDraw, ...]:
+    """Generate the complete serial bootstrap draw stream before dispatch."""
+
+    rng = random.Random(seed)
+    return tuple(
+        tuple(rng.randrange(n_clusters) for _ in range(n_clusters))
+        for _ in range(n_resamples)
+    )
+
+
+def _contiguous_draw_chunks(
+    draws: Sequence[ClusterIndexDraw],
+    *,
+    workers: int,
+) -> tuple[tuple[ClusterIndexDraw, ...], ...]:
+    """Split ordered draws without changing their eventual result order."""
+
+    chunk_count = min(workers, len(draws))
+    base_size, remainder = divmod(len(draws), chunk_count)
+    chunks: list[tuple[ClusterIndexDraw, ...]] = []
+    start = 0
+    for index in range(chunk_count):
+        size = base_size + (1 if index < remainder else 0)
+        stop = start + size
+        chunks.append(tuple(draws[start:stop]))
+        start = stop
+    return tuple(chunks)
+
+
+def _fit_uncertainty_gee_draw_chunk(
+    clustered_rows: ClusteredUncertaintyRows,
+    draws: Sequence[ClusterIndexDraw],
+) -> tuple[float | None, ...]:
+    """Fit one contiguous chunk of pre-generated cluster draws."""
+
+    slopes: list[float | None] = []
+    for draw in draws:
+        sampled_rows: list[dict[str, Any]] = []
+        for draw_index, cluster_index in enumerate(draw):
+            sampled_rows.extend(
+                {
+                    "question_id": f"bootstrap-{draw_index}",
+                    "normalized_dose": normalized_dose,
+                    "uncertainty": uncertainty,
+                }
+                for normalized_dose, uncertainty in clustered_rows[cluster_index]
+            )
+        try:
+            result = fit_uncertainty_gee(sampled_rows)
+        except (
+            OptionalAnalysisDependencyError,
+            ValueError,
+            RuntimeError,
+        ):
+            slopes.append(None)
+            continue
+        slopes.append(result.slope if math.isfinite(result.slope) else None)
+    return tuple(slopes)
+
+
+def cluster_bootstrap_uncertainty_gee_slopes(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    n_resamples: int,
+    seed: int,
+    workers: int = 1,
+    group_column: str = "question_id",
+) -> tuple[float | None, ...]:
+    """Fit GEE slopes for deterministic question-cluster bootstrap draws.
+
+    Draws are generated entirely in the calling process, then divided into
+    contiguous chunks. Collecting those chunks in submission order makes the
+    returned sequence independent of worker scheduling and byte-identical to
+    the serial result.
+    """
+
+    if workers < 1:
+        raise ValueError("workers must be a positive integer")
+    if n_resamples < 1:
+        return ()
+    grouped: dict[Any, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        missing = {
+            group_column,
+            "normalized_dose",
+            "uncertainty",
+        } - set(row)
+        if missing:
+            raise ValueError(
+                "uncertainty bootstrap input is missing columns: "
+                f"{sorted(missing)}"
+            )
+        grouped.setdefault(row[group_column], []).append(row)
+    keys = sorted(grouped, key=repr)
+    if len(keys) < 2:
+        return ()
+    clustered_rows: ClusteredUncertaintyRows = tuple(
+        tuple(
+            (
+                float(row["normalized_dose"]),
+                float(row["uncertainty"]),
+            )
+            for row in grouped[key]
+        )
+        for key in keys
+    )
+    draws = _cluster_index_draws(
+        n_clusters=len(keys),
+        n_resamples=n_resamples,
+        seed=seed,
+    )
+    chunks = _contiguous_draw_chunks(draws, workers=workers)
+    if len(chunks) == 1:
+        return _fit_uncertainty_gee_draw_chunk(clustered_rows, chunks[0])
+    with ProcessPoolExecutor(
+        max_workers=len(chunks),
+        mp_context=multiprocessing.get_context("spawn"),
+    ) as executor:
+        futures = tuple(
+            executor.submit(
+                _fit_uncertainty_gee_draw_chunk,
+                clustered_rows,
+                chunk,
+            )
+            for chunk in chunks
+        )
+        return tuple(
+            slope
+            for future in futures
+            for slope in future.result()
+        )
 
 
 def _modeling_frame(

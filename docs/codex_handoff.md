@@ -325,6 +325,26 @@ Verification after the `strict_v3` correction: 254 tests passed under Python
 3.12, changed Python files compiled, `git diff --check` passed, and the
 campaign wrapper passed `bash -n`.
 
+## Deterministic Full-Analysis Performance Hardening
+
+RQ1 susceptibility AUROC now uses an exact rank-based `O(n log n)` algorithm
+with integer twice-win accounting for ties. It preserves the previous pairwise
+estimator while removing the quadratic bootstrap bottleneck.
+
+The question-clustered Gaussian GEE bootstrap can be parallelized with
+`scripts/analyze_silent_bias.py --gee-bootstrap-workers N`. The parent process
+pre-generates the complete seeded cluster-index draw stream and dispatches
+contiguous chunks, then restores draw order before computing intervals.
+Workers use a spawn context so analysis does not fork a process after numerical
+libraries have created threads.
+Worker count is operational and intentionally excluded from the scientific
+analysis specification and its hash, so serial and parallel runs produce the
+same analysis package.
+
+Verification: all changed Python files compiled under Python 3.12, and 81
+targeted analysis, package-validation, and deterministic paper-asset tests
+passed.
+
 ## 2026-07-30 `strict_v3` Smoke Gate Completion
 
 All four required judges subsequently passed the aggregate smoke gate. For

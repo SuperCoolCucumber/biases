@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 
 import pytest
 
@@ -13,6 +14,7 @@ from biases.analysis.rq1 import (
     compute_paired_shifts,
     jensen_shannon_divergence,
     low_dose_susceptibility_auc,
+    roc_auc,
 )
 
 
@@ -114,6 +116,47 @@ def test_jensen_shannon_is_symmetric_and_zero_for_equal_distributions() -> None:
     assert jensen_shannon_divergence(first, second) == pytest.approx(
         jensen_shannon_divergence(second, first)
     )
+
+
+def test_roc_auc_preserves_half_credit_for_ties() -> None:
+    assert roc_auc([1, 1, 0, 0], [0.9, 0.5, 0.5, 0.1]) == 0.875
+
+
+def test_roc_auc_all_equal_scores_are_chance() -> None:
+    assert roc_auc([1, 0, 1, 0], [0.25, 0.25, 0.25, 0.25]) == 0.5
+
+
+def test_roc_auc_preserves_nan_and_infinite_pairwise_semantics() -> None:
+    labels = [1, 1, 1, 0, 0, 0]
+    scores = [math.nan, math.inf, -math.inf, math.nan, math.inf, -math.inf]
+
+    assert roc_auc(labels, scores) == 2.0 / 9.0
+
+
+@pytest.mark.parametrize("labels", ([1, 1], [0, 0], []))
+def test_roc_auc_returns_none_when_a_class_is_missing(labels: list[int]) -> None:
+    assert roc_auc(labels, [0.5] * len(labels)) is None
+
+
+def test_roc_auc_rejects_length_mismatch() -> None:
+    with pytest.raises(ValueError, match="same length"):
+        roc_auc([1, 0], [0.5])
+
+
+def test_roc_auc_matches_pairwise_reference_on_random_tied_scores() -> None:
+    rng = random.Random(20260730)
+    labels = [rng.randrange(2) for _ in range(400)]
+    scores = [rng.randrange(25) / 10.0 for _ in labels]
+    positives = [score for label, score in zip(labels, scores, strict=True) if label]
+    negatives = [score for label, score in zip(labels, scores, strict=True) if not label]
+    wins = sum(
+        float(positive > negative) + 0.5 * float(positive == negative)
+        for positive in positives
+        for negative in negatives
+    )
+    expected = wins / (len(positives) * len(negatives))
+
+    assert roc_auc(labels, scores) == expected
 
 
 def test_question_cluster_percentile_bootstrap_is_deterministic() -> None:

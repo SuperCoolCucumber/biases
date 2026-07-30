@@ -21,9 +21,17 @@ uv run --extra analysis python scripts/analyze_silent_bias.py \
   --stage-b "$BIASES_ARTIFACT_ROOT/outputs/pilot/silent_bias_stage_b_uncertainty_scores.jsonl" \
   --output-dir "$BIASES_ARTIFACT_ROOT/outputs/analysis" \
   --bootstrap-resamples 2000 \
+  --gee-bootstrap-workers 8 \
   --trend-permutations 10000 \
   --seed 42
 ```
+
+`--gee-bootstrap-workers` parallelizes only the seeded GEE bootstrap refits
+and is excluded from the scientific specification hash; serial and parallel
+runs preserve the same draw stream and output order. Keep the worker count at
+or below the allocated CPU count. When using multiple workers, set
+`OPENBLAS_NUM_THREADS=1`, `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and
+`NUMEXPR_NUM_THREADS=1` so each worker does not create a second thread pool.
 
 The conventional CSV outputs are:
 

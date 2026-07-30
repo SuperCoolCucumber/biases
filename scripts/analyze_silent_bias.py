@@ -4,7 +4,6 @@ import argparse
 import csv
 import json
 import math
-import random
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, replace
@@ -24,6 +23,7 @@ from biases.analysis.modeling import (
     MIXED_EFFECTS_FORMULA,
     UNCERTAINTY_GEE_FORMULA,
     OptionalAnalysisDependencyError,
+    cluster_bootstrap_uncertainty_gee_slopes,
     fit_flip_mixed_logit,
     fit_uncertainty_gee,
 )
@@ -718,40 +718,27 @@ def _gee_slope_cluster_bootstrap(
     *,
     n_resamples: int,
     seed: int,
+    workers: int = 1,
     confidence: float = 0.95,
 ) -> tuple[float | None, float | None, int]:
     """Bootstrap the GEE slope over questions, re-keying duplicate draws."""
 
     if n_resamples < 1:
         return None, None, 0
-    grouped = _group(observations, lambda observation: observation.question_id)
-    keys = sorted(grouped, key=repr)
-    if len(keys) < 2:
-        return None, None, 0
-    rng = random.Random(seed)
-    slopes: list[float] = []
-    for _ in range(n_resamples):
-        sampled_rows: list[dict[str, Any]] = []
-        for draw_index in range(len(keys)):
-            sampled_key = keys[rng.randrange(len(keys))]
-            sampled_rows.extend(
-                {
-                    "question_id": f"bootstrap-{draw_index}",
-                    "normalized_dose": observation.dose,
-                    "uncertainty": observation.value,
-                }
-                for observation in grouped[sampled_key]
-            )
-        try:
-            result = fit_uncertainty_gee(sampled_rows)
-        except (
-            OptionalAnalysisDependencyError,
-            ValueError,
-            RuntimeError,
-        ):
-            continue
-        if math.isfinite(result.slope):
-            slopes.append(result.slope)
+    draw_slopes = cluster_bootstrap_uncertainty_gee_slopes(
+        [
+            {
+                "question_id": observation.question_id,
+                "normalized_dose": observation.dose,
+                "uncertainty": observation.value,
+            }
+            for observation in observations
+        ],
+        n_resamples=n_resamples,
+        seed=seed,
+        workers=workers,
+    )
+    slopes = [slope for slope in draw_slopes if slope is not None]
     if not slopes:
         return None, None, 0
     alpha = 1.0 - confidence
@@ -769,7 +756,10 @@ def uncertainty_trend_outputs(
     n_permutations: int,
     n_resamples: int = 0,
     seed: int,
+    gee_bootstrap_workers: int = 1,
 ) -> list[dict[str, Any]]:
+    if gee_bootstrap_workers < 1:
+        raise ValueError("gee_bootstrap_workers must be a positive integer")
     metrics = (
         "cued_entropy",
         "delta_entropy",
@@ -923,6 +913,7 @@ def uncertainty_trend_outputs(
                             observations,
                             n_resamples=n_resamples,
                             seed=seed,
+                            workers=gee_bootstrap_workers,
                         )
                     rows.append(
                         {
@@ -1251,7 +1242,14 @@ def _attach_swap_flip(
     return tuple(result)
 
 
-def parse_args() -> argparse.Namespace:
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compute the Silent Bias RQ1-RQ3 analysis package from Stage A/B flat JSONL.",
     )
@@ -1259,11 +1257,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage-b", type=Path, nargs="+", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--bootstrap-resamples", type=int, default=2000)
+    parser.add_argument(
+        "--gee-bootstrap-workers",
+        type=_positive_int,
+        default=1,
+        help=(
+            "worker processes for RQ3 GEE bootstrap refits; operational only "
+            "and excluded from the scientific spec hash"
+        ),
+    )
     parser.add_argument("--trend-permutations", type=int, default=10_000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--ece-bins", type=int, default=10)
     parser.add_argument("--target-risk", type=float, nargs="+", default=[0.10, 0.20])
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:
@@ -1399,6 +1406,7 @@ def main() -> None:
             n_permutations=args.trend_permutations,
             n_resamples=args.bootstrap_resamples,
             seed=args.seed,
+            gee_bootstrap_workers=args.gee_bootstrap_workers,
         ),
         "rq3_uncertainty_by_dose.csv": uncertainty_by_dose_outputs(
             shifts,

@@ -573,9 +573,15 @@ def test_primary_uncertainty_trends_carry_cluster_bootstrap_intervals() -> None:
             converged=True,
         )
 
-    with patch(
-        "scripts.analyze_silent_bias.fit_uncertainty_gee",
-        side_effect=fake_gee,
+    with (
+        patch(
+            "scripts.analyze_silent_bias.fit_uncertainty_gee",
+            side_effect=fake_gee,
+        ),
+        patch(
+            "biases.analysis.modeling.fit_uncertainty_gee",
+            side_effect=fake_gee,
+        ),
     ):
         rows = uncertainty_trend_outputs(
             _rq3_shifts(),
