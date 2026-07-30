@@ -48,6 +48,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "dose": 4,
                 "clean_tie": False,
                 "flip": False,
+                "routing_split": "test",
                 "signed_cue_mass": 0.25,
             },
             {
@@ -58,6 +59,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "dose": 1,
                 "clean_tie": False,
                 "flip": False,
+                "routing_split": "test",
                 "signed_cue_mass": 0.10,
             },
         ],
@@ -71,6 +73,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "clean_tie": False,
                 "metric": "signed_cue_mass",
                 "primary": True,
+                "routing_split": "test",
                 "n": 20,
                 "estimate": 0.25,
                 "ci_low": 0.12,
@@ -86,6 +89,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "clean_tie": False,
                 "metric": "signed_cue_mass",
                 "primary": True,
+                "routing_split": "test",
                 "n": 20,
                 "estimate": 0.10,
                 "ci_low": 0.02,
@@ -99,6 +103,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "model_name": "Qwen_Model",
                 "family": "authority",
                 "primary": True,
+                "routing_split": "test",
                 "shift_metric": "signed_cue_mass",
                 "low_dose": 1,
                 "high_dose": 4,
@@ -276,6 +281,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "direction": "incongruent",
                 "clean_tie": False,
                 "primary": True,
+                "routing_split": "test",
                 "n": 80,
                 "events": 20,
                 "intercept": -3.0,
@@ -301,6 +307,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "metric": "cued_entropy",
                 "stable_set": "pre_first_flip",
                 "primary": True,
+                "routing_split": "test",
                 "statistic": 0.08,
                 "slope_ci_low": 0.02,
                 "slope_ci_high": 0.14,
@@ -325,6 +332,7 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "n": 20,
                 "n_clusters": 10,
                 "primary": True,
+                "routing_split": "test",
             }
             for dose in (1.0, 2.0, 3.0, 4.0)
         ],
@@ -396,6 +404,41 @@ def test_rq2_headline_filters_do_not_pool_channels_splits_or_ties() -> None:
     assert {row["confidence_channel"] for row in reliability} == {"msp"}
     assert {row["routing_split"] for row in risk} == {"test"}
     assert all(row["clean_tie"] is False for row in [*reliability, *risk])
+
+
+def test_rq1_and_rq3_asset_selectors_reject_calibration_rows() -> None:
+    rows = _fixture_rows()
+    cases = (
+        ("rq1_silent_shift.csv", assets._rq1_silent_rows),
+        ("rq1_susceptibility.csv", assets._rq1_susceptibility_rows),
+        ("rq3_dose_response.csv", assets._rq3_dose_rows),
+        ("rq3_uncertainty_trend.csv", assets._rq3_trend_rows),
+        (
+            "rq3_uncertainty_by_dose.csv",
+            assets._rq3_uncertainty_dose_rows,
+        ),
+    )
+    for name, selector in cases:
+        calibration = dict(rows[name][0])
+        calibration["routing_split"] = "calibration"
+        calibration["model_name"] = "calibration-leak"
+        selected = selector([*rows[name], calibration])
+        assert selected
+        assert {row["routing_split"] for row in selected} == {"test"}
+        assert all(row["model_name"] != "calibration-leak" for row in selected)
+
+    calibration_pair = dict(rows["paired_shifts.csv"][0])
+    calibration_pair["routing_split"] = "calibration"
+    calibration_pair["model_name"] = "calibration-leak"
+    selected_pairs = assets._eligible_paired_shifts(
+        [*rows["paired_shifts.csv"], calibration_pair]
+    )
+    assert selected_pairs
+    assert {row["routing_split"] for row in selected_pairs} == {"test"}
+    assert all(
+        row["model_name"] != "calibration-leak"
+        for row in selected_pairs
+    )
 
 
 def test_digest_never_claims_failure_when_transferred_threshold_has_zero_coverage() -> None:

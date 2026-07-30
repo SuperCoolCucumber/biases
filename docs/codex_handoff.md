@@ -385,3 +385,35 @@ or asset packages always fail.
 
 This gate changes post-inference validation only; the active pilot inference
 remains pinned to the previously recorded experiment commit.
+
+## 2026-07-30 Test-Only Headline Population Correction
+
+A pre-analysis report audit found that the RQ1 and RQ3 aggregation functions
+received both deterministic routing splits even though the preregistered split
+policy reserves calibration rows for RQ2 threshold selection. No generated
+RQ1--RQ3 result from that pooled implementation is scientific evidence. The
+corrected Stage A/B inference artifacts remain valid and do not require a GPU
+rerun because every flat record already carries its source `routing_split`.
+
+Analysis version `silent-bias-p4-v5` now fails on missing or unknown split
+values, retains both splits only in `paired_shifts.csv`, and estimates every
+aggregate RQ1 and RQ3 output from `routing_split=test`. The mixed-effects model
+uses the test, non-clean-tie population. Every affected CSV declares the split,
+and the split and mixed-model population policies are bound into the analysis
+spec hash. Paper-assets version `silent-bias-paper-assets-v3` defensively
+filters RQ1/RQ3 tables, digests, and empirical plots to the same test
+population.
+
+The package validator requires the new population metadata and rejects any
+calibration-tagged RQ1/RQ3 output. Its mixed-model expected `n` is derived from
+the actual test/non-tie rows in `paired_shifts.csv`, rather than from the full
+source size. Mixed-split fixtures with opposing calibration effects verify that
+calibration data cannot change RQ1/RQ3 estimates, and explicit clean-tie
+fixtures verify the modeling exclusion.
+
+Verification after this correction: 68 focused analysis, package-validation,
+and paper-asset tests passed under Python 3.12; two optional-dependency tests
+were skipped in the local runtime. Changed Python files compiled,
+`git diff --check` passed, and an independent review found no blocking defect.
+Run the same focused suite with Matplotlib and statsmodels available before
+generating the corrected pilot package.

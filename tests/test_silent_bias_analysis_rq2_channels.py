@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from unittest.mock import patch
+
+import pytest
 
 from biases.analysis.dose_response import normalized_social_dose
 from biases.analysis.modeling import (
@@ -10,13 +14,15 @@ from biases.analysis.modeling import (
     UncertaintyGEEResult,
 )
 from biases.analysis.records import pair_clean_and_cued, record_from_mapping
-from biases.analysis.rq1 import compute_paired_shifts
+from biases.analysis.rq1 import PairedShift, compute_paired_shifts
 from biases.analysis.selective import ScoredPrediction, bootstrap_threshold_rules
 from scripts.analyze_silent_bias import (
     calibration_outputs,
     dose_response_outputs,
     modeling_outputs,
     risk_coverage_outputs,
+    summarize_silent_shift,
+    summarize_susceptibility,
     threshold_transfer_outputs,
     uncertainty_by_dose_outputs,
     uncertainty_trend_outputs,
@@ -258,7 +264,7 @@ def _flat_row(
     }
 
 
-def _rq3_shifts():
+def _rq3_shifts() -> tuple[PairedShift, ...]:
     clean = []
     cued = []
     for family, doses in (
@@ -298,9 +304,155 @@ def _rq3_shifts():
     return compute_paired_shifts(pair_clean_and_cued(clean, cued).pairs)
 
 
+def _calibration_copies(
+    shifts: Sequence[PairedShift],
+) -> tuple[PairedShift, ...]:
+    return tuple(
+        replace(
+            shift,
+            clean_record_id=f"cal-{shift.clean_record_id}",
+            cued_record_id=f"cal-{shift.cued_record_id}",
+            example_id=f"cal-{shift.example_id}",
+            question_id=f"cal-{shift.question_id}",
+            pair_key=f"cal-{shift.pair_key}",
+            condition_group_id=(
+                None
+                if shift.condition_group_id is None
+                else f"cal-{shift.condition_group_id}"
+            ),
+            routing_split="calibration",
+            signed_cue_mass=(
+                None
+                if shift.signed_cue_mass is None
+                else -shift.signed_cue_mass
+            ),
+        )
+        for shift in shifts
+    )
+
+
+def test_rq1_and_rq3_headlines_use_only_the_requested_test_split() -> None:
+    test_shifts = _rq3_shifts()
+    mixed_shifts = (*test_shifts, *_calibration_copies(test_shifts))
+    test_tie = replace(
+        test_shifts[0],
+        clean_record_id=f"tie-{test_shifts[0].clean_record_id}",
+        cued_record_id=f"tie-{test_shifts[0].cued_record_id}",
+        example_id=f"tie-{test_shifts[0].example_id}",
+        question_id=f"tie-{test_shifts[0].question_id}",
+        pair_key=f"tie-{test_shifts[0].pair_key}",
+        condition_group_id="tie-group",
+        clean_tie=True,
+    )
+
+    assert summarize_silent_shift(
+        mixed_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    ) == summarize_silent_shift(
+        test_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    )
+    assert summarize_susceptibility(
+        mixed_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    ) == summarize_susceptibility(
+        test_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    )
+    assert dose_response_outputs(
+        mixed_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    ) == dose_response_outputs(
+        test_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    )
+    assert uncertainty_by_dose_outputs(
+        mixed_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    ) == uncertainty_by_dose_outputs(
+        test_shifts,
+        routing_split="test",
+        n_resamples=20,
+        seed=42,
+    )
+    with patch(
+        "scripts.analyze_silent_bias.fit_uncertainty_gee",
+        side_effect=OptionalAnalysisDependencyError(
+            "statsmodels unavailable in fixture"
+        ),
+    ):
+        assert uncertainty_trend_outputs(
+            mixed_shifts,
+            routing_split="test",
+            n_permutations=20,
+            seed=42,
+        ) == uncertainty_trend_outputs(
+            test_shifts,
+            routing_split="test",
+            n_permutations=20,
+            seed=42,
+        )
+
+    captured: list[dict[str, object]] = []
+
+    def unavailable(rows):
+        captured.extend(rows)
+        raise OptionalAnalysisDependencyError("statsmodels unavailable in fixture")
+
+    with patch(
+        "scripts.analyze_silent_bias.fit_flip_mixed_logit",
+        side_effect=unavailable,
+    ):
+        output = modeling_outputs(
+            (*mixed_shifts, test_tie),
+            routing_split="test",
+        )
+    assert output[0]["routing_split"] == "test"
+    assert output[0]["clean_tie"] is False
+    assert len(captured) == len(test_shifts)
+    assert all(row["question_id"] != test_tie.question_id for row in captured)
+    assert {row["question_id"] for row in captured}.isdisjoint(
+        {
+            shift.question_id
+            for shift in _calibration_copies(test_shifts)
+        }
+    )
+
+
+def test_headline_split_selection_rejects_unknown_input_splits() -> None:
+    shifts = _rq3_shifts()
+    invalid = (replace(shifts[0], routing_split=None), *shifts[1:])
+    with pytest.raises(ValueError, match="invalid values"):
+        dose_response_outputs(
+            invalid,
+            routing_split="test",
+            n_resamples=10,
+            seed=42,
+        )
+
+
 def test_rq3_primary_slope_tail_p_values_receive_holm_correction() -> None:
     shifts = _rq3_shifts()
-    rows = dose_response_outputs(shifts, n_resamples=50, seed=42)
+    rows = dose_response_outputs(
+        shifts,
+        routing_split="test",
+        n_resamples=50,
+        seed=42,
+    )
     primary = [row for row in rows if row["primary"]]
     assert len(primary) == 2
     assert all(row["slope_p_value_one_sided"] is not None for row in primary)
@@ -332,7 +484,10 @@ def test_mixed_model_uses_normalized_dose_and_reports_scale_metadata() -> None:
         "scripts.analyze_silent_bias.fit_flip_mixed_logit",
         side_effect=unavailable,
     ):
-        output = modeling_outputs(_rq3_shifts())
+        output = modeling_outputs(
+            _rq3_shifts(),
+            routing_split="test",
+        )
 
     assert len(output) == 1
     assert output[0]["formula"] == MIXED_EFFECTS_FORMULA
@@ -362,6 +517,7 @@ def test_uncertainty_trends_emit_gee_rows_and_permutation_sensitivity() -> None:
     ):
         rows = uncertainty_trend_outputs(
             _rq3_shifts(),
+            routing_split="test",
             n_permutations=20,
             seed=42,
         )
@@ -423,6 +579,7 @@ def test_primary_uncertainty_trends_carry_cluster_bootstrap_intervals() -> None:
     ):
         rows = uncertainty_trend_outputs(
             _rq3_shifts(),
+            routing_split="test",
             n_permutations=20,
             n_resamples=20,
             seed=42,
@@ -438,6 +595,7 @@ def test_primary_uncertainty_trends_carry_cluster_bootstrap_intervals() -> None:
 def test_primary_uncertainty_by_dose_rows_have_clustered_intervals() -> None:
     rows = uncertainty_by_dose_outputs(
         _rq3_shifts(),
+        routing_split="test",
         n_resamples=20,
         seed=42,
     )

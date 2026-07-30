@@ -122,6 +122,7 @@ def _analysis_rows(
             "p_value_holm": 0.04,
             "p_value_one_sided": 0.02,
             "primary": True,
+            "routing_split": "test",
         }
         for family, family_doses in doses.items()
         for dose in family_doses
@@ -133,6 +134,7 @@ def _analysis_rows(
             "auc_difference_ci_high": 0.20,
             "auc_difference_ci_low": 0.01,
             "baseline_channel": "entropy",
+            "clean_tie": False,
             "clean_baseline_auc": 0.60,
             "clean_baseline_auc_ci_high": 0.70,
             "clean_baseline_auc_ci_low": 0.50,
@@ -145,6 +147,7 @@ def _analysis_rows(
             "n_resamples": RESAMPLES,
             "positives": 1,
             "primary": True,
+            "routing_split": "test",
             "shift_auc": 0.70,
             "shift_auc_ci_high": 0.80,
             "shift_auc_ci_low": 0.60,
@@ -381,6 +384,7 @@ def _analysis_rows(
             "p25_dose": family_doses[1],
             "p_value_holm": 0.04,
             "primary": True,
+            "routing_split": "test",
             "slope": 0.50,
             "slope_ci_high": 0.80,
             "slope_ci_low": 0.20,
@@ -405,6 +409,7 @@ def _analysis_rows(
             "n_clusters": 1,
             "p_value_holm": 0.04,
             "primary": True,
+            "routing_split": "test",
             "sensitivity_analysis": False,
             "slope": 0.10,
             "slope_ci_high": 0.15,
@@ -434,6 +439,7 @@ def _analysis_rows(
             "n_resamples": RESAMPLES,
             "normalized_dose": index / 3.0,
             "primary": True,
+            "routing_split": "test",
             "stable_set": "pre_first_flip",
         }
         for family, family_doses in doses.items()
@@ -442,6 +448,7 @@ def _analysis_rows(
     modeling = [
         {
             **provenance,
+            "clean_tie": False,
             "converged": True,
             "estimate": 0.10,
             "fit_method": "statsmodels.BinomialBayesMixedGLM.fit_vb",
@@ -450,6 +457,7 @@ def _analysis_rows(
             "n": 32,
             "p_value": 0.02,
             "p_value_holm": 0.04,
+            "routing_split": "test",
             "standard_error": 0.02,
             "status": "ok",
             "term": term,
@@ -553,6 +561,14 @@ def _make_complete_package(tmp_path: Path) -> CompletePackage:
         "ece_bins": 10,
         "formula": MIXED_EFFECTS_FORMULA,
         "missing_channel_verdict_policy": "exclude_without_fallback",
+        "routing_split_policy": {
+            "calibration": "threshold_selection_only",
+            "headline_estimation": "test",
+        },
+        "mixed_model_population": {
+            "routing_split": "test",
+            "clean_tie": False,
+        },
         "seed": 42,
         "target_risks": [0.10, 0.20],
         "tie_policy": "strict_three_class",
@@ -988,6 +1004,82 @@ def test_missing_primary_column_fails_schema_validation(tmp_path: Path) -> None:
     _replace_csv(package, "rq3_uncertainty_by_dose.csv", remove_primary)
 
     assert "csv_header_missing" in _codes(package)
+
+
+def test_calibration_tagged_rq1_or_rq3_headline_row_fails(
+    tmp_path: Path,
+) -> None:
+    package = _make_complete_package(tmp_path)
+
+    def move_to_calibration(rows: list[dict[str, str]]) -> None:
+        rows[0]["routing_split"] = "calibration"
+
+    _replace_csv(
+        package,
+        "rq1_silent_shift.csv",
+        move_to_calibration,
+    )
+
+    assert "headline_routing_split_mismatch" in _codes(package)
+
+
+def test_missing_headline_routing_split_column_fails(tmp_path: Path) -> None:
+    package = _make_complete_package(tmp_path)
+
+    def remove_split(rows: list[dict[str, str]]) -> None:
+        for row in rows:
+            row.pop("routing_split")
+
+    _replace_csv(package, "rq3_dose_response.csv", remove_split)
+
+    assert "csv_header_missing" in _codes(package)
+
+
+def test_stale_routing_split_policy_in_spec_fails(tmp_path: Path) -> None:
+    package = _make_complete_package(tmp_path)
+    path = package.analysis_dir / "provenance.json"
+    provenance = json.loads(path.read_text(encoding="utf-8"))
+    provenance["spec"]["routing_split_policy"][
+        "headline_estimation"
+    ] = "calibration_and_test"
+    _write_json(path, provenance)
+    _refresh_analysis_manifest(package)
+    _refresh_asset_manifests(package)
+
+    assert "analysis_spec_mismatch" in _codes(package)
+
+
+def test_mixed_model_n_must_match_test_nontie_paired_population(
+    tmp_path: Path,
+) -> None:
+    package = _make_complete_package(tmp_path)
+
+    def corrupt_n(rows: list[dict[str, str]]) -> None:
+        for row in rows:
+            row["n"] = "31"
+
+    _replace_csv(package, "rq3_modeling.csv", corrupt_n)
+
+    assert "modeling_count_mismatch" in _codes(package)
+
+
+def test_mixed_model_n_derives_from_mixed_split_and_tie_population(
+    tmp_path: Path,
+) -> None:
+    package = _make_complete_package(tmp_path)
+
+    def create_excluded_rows(rows: list[dict[str, str]]) -> None:
+        rows[0]["routing_split"] = "calibration"
+        rows[1]["clean_tie"] = "True"
+
+    def use_expected_n(rows: list[dict[str, str]]) -> None:
+        for row in rows:
+            row["n"] = "30"
+
+    _replace_csv(package, "paired_shifts.csv", create_excluded_rows)
+    _replace_csv(package, "rq3_modeling.csv", use_expected_n)
+
+    assert "modeling_count_mismatch" not in _codes(package)
 
 
 def test_cli_accepts_registry_alias_and_writes_report(

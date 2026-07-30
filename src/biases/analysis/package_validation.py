@@ -17,8 +17,9 @@ from biases.models import get_model_profile
 from biases.stats import mcnemar_exact
 
 
-ANALYSIS_VERSION = "silent-bias-p4-v4"
-ASSET_VERSION = "silent-bias-paper-assets-v2"
+ANALYSIS_VERSION = "silent-bias-p4-v5"
+HEADLINE_ROUTING_SPLIT = "test"
+ASSET_VERSION = "silent-bias-paper-assets-v3"
 MIXED_EFFECTS_FORMULA = (
     "flip ~ dose * family * congruence + (1 | question)"
 )
@@ -71,6 +72,7 @@ PRIMARY_CSV_NAMES = frozenset(
         "rq3_uncertainty_by_dose.csv",
     }
 )
+HEADLINE_SPLIT_CSV_NAMES = PRIMARY_CSV_NAMES | {"rq3_modeling.csv"}
 PRIMARY_COLUMN_CSV_NAMES = PRIMARY_CSV_NAMES | {"rq2_mcnemar.csv"}
 SELECTED_ROW_CSV_NAMES = PRIMARY_COLUMN_CSV_NAMES | {"rq3_modeling.csv"}
 COMMON_CONDITION_COLUMNS = frozenset(
@@ -123,6 +125,7 @@ CSV_REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "non_flipped_only",
             "p_value_one_sided",
             "primary",
+            "routing_split",
         }
     ),
     "rq1_susceptibility.csv": frozenset(
@@ -131,6 +134,7 @@ CSV_REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "auc_difference_ci_high",
             "auc_difference_ci_low",
             "baseline_channel",
+            "clean_tie",
             "clean_baseline_auc",
             "clean_baseline_auc_ci_high",
             "clean_baseline_auc_ci_low",
@@ -143,6 +147,7 @@ CSV_REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "n_resamples",
             "positives",
             "primary",
+            "routing_split",
             "shift_auc",
             "shift_auc_ci_high",
             "shift_auc_ci_low",
@@ -270,6 +275,7 @@ CSV_REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "p25_ci_low",
             "p25_dose",
             "primary",
+            "routing_split",
             "slope",
             "slope_ci_high",
             "slope_ci_low",
@@ -290,6 +296,7 @@ CSV_REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "n",
             "n_clusters",
             "primary",
+            "routing_split",
             "sensitivity_analysis",
             "slope",
             "slope_ci_high",
@@ -315,10 +322,19 @@ CSV_REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "n_resamples",
             "normalized_dose",
             "primary",
+            "routing_split",
             "stable_set",
         }
     ),
-    "rq3_modeling.csv": frozenset({"formula", "model_name", "status"}),
+    "rq3_modeling.csv": frozenset(
+        {
+            "clean_tie",
+            "formula",
+            "model_name",
+            "routing_split",
+            "status",
+        }
+    ),
 }
 MIXED_MODEL_TERMS = frozenset(
     {
@@ -744,6 +760,14 @@ def _validate_spec(
         "missing_channel_verdict_policy": "exclude_without_fallback",
         "accepted_flip_policy": "matching_channel_clean_vs_cued_verdict",
         "tie_policy": "strict_three_class",
+        "routing_split_policy": {
+            "calibration": "threshold_selection_only",
+            "headline_estimation": HEADLINE_ROUTING_SPLIT,
+        },
+        "mixed_model_population": {
+            "routing_split": HEADLINE_ROUTING_SPLIT,
+            "clean_tie": False,
+        },
         "formula": MIXED_EFFECTS_FORMULA,
     }
     for field, expected in expected_spec_values.items():
@@ -962,11 +986,12 @@ def _validate_paired_grid(
     expected_spec_hash: str | None,
     expected_input_hashes: str,
     collector: _IssueCollector,
-) -> None:
+) -> Mapping[str, int]:
     if not path.is_file():
-        return
+        return {}
     cell_counts: Counter[tuple[str, str, str, float, str]] = Counter()
     model_counts: Counter[str] = Counter()
+    test_non_tie_model_counts: Counter[str] = Counter()
     seen_record_ids: set[str] = set()
     row_count = 0
     try:
@@ -976,6 +1001,27 @@ def _validate_paired_grid(
                 row_count += 1
                 model = str(row.get("model_name", ""))
                 model_counts[model] += 1
+                routing_split = str(row.get("routing_split", ""))
+                if routing_split not in {"calibration", "test"}:
+                    collector.add(
+                        "paired_routing_split_invalid",
+                        "routing_split must be calibration or test",
+                        path=path,
+                        row=line_number,
+                    )
+                clean_tie = _as_bool(row.get("clean_tie"))
+                if clean_tie is None:
+                    collector.add(
+                        "paired_clean_tie_invalid",
+                        "clean_tie must be an explicit true/false value",
+                        path=path,
+                        row=line_number,
+                    )
+                elif (
+                    routing_split == HEADLINE_ROUTING_SPLIT
+                    and clean_tie is False
+                ):
+                    test_non_tie_model_counts[model] += 1
                 key = _paired_cell_key(row)
                 if key is None:
                     collector.add(
@@ -1034,7 +1080,7 @@ def _validate_paired_grid(
                         )
     except (OSError, UnicodeError, csv.Error) as exc:
         collector.add("invalid_csv", str(exc), path=path)
-        return
+        return {}
     if row_count != config.expected_paired_records:
         collector.add(
             "paired_row_count_mismatch",
@@ -1070,6 +1116,7 @@ def _validate_paired_grid(
                 f"cell {key!r} has {count} rows; expected {config.source_pairs}",
                 path=path,
             )
+    return dict(test_non_tie_model_counts)
 
 
 def _require_literal(
@@ -1293,9 +1340,14 @@ def _expected_primary(name: str, row: Mapping[str, str]) -> bool:
             and clean_tie is False
             and row.get("metric") == "signed_cue_mass"
             and _as_bool(row.get("non_flipped_only")) is True
+            and row.get("routing_split") == HEADLINE_ROUTING_SPLIT
         )
     if name == "rq1_susceptibility.csv":
-        return row.get("shift_metric") == "signed_cue_mass"
+        return (
+            row.get("shift_metric") == "signed_cue_mass"
+            and clean_tie is False
+            and row.get("routing_split") == HEADLINE_ROUTING_SPLIT
+        )
     if name == "rq2_threshold_transfer.csv":
         doses = SOCIAL_DOSES.get(family, ())
         return (
@@ -1316,7 +1368,11 @@ def _expected_primary(name: str, row: Mapping[str, str]) -> bool:
             and row.get("routing_split") == "test"
         )
     if name == "rq3_dose_response.csv":
-        return row.get("direction") == "incongruent" and clean_tie is False
+        return (
+            row.get("direction") == "incongruent"
+            and clean_tie is False
+            and row.get("routing_split") == HEADLINE_ROUTING_SPLIT
+        )
     if name == "rq3_uncertainty_trend.csv":
         return (
             row.get("direction") == "incongruent"
@@ -1325,9 +1381,10 @@ def _expected_primary(name: str, row: Mapping[str, str]) -> bool:
             and row.get("stable_set") == "pre_first_flip"
             and row.get("estimator") == "gaussian_gee_exchangeable"
             and _as_bool(row.get("sensitivity_analysis")) is False
+            and row.get("routing_split") == HEADLINE_ROUTING_SPLIT
         )
     if name == "rq3_uncertainty_by_dose.csv":
-        return True
+        return row.get("routing_split") == HEADLINE_ROUTING_SPLIT
     raise ValueError(f"unsupported primary-selector CSV: {name}")
 
 
@@ -1357,6 +1414,26 @@ def _validate_primary_selectors(
                     (
                         f"primary is {observed}; analyzer semantics require "
                         f"{expected}"
+                    ),
+                    path=inspection.path,
+                    row=row.line_number,
+                )
+
+
+def _validate_headline_routing_splits(
+    inspections: Mapping[str, CsvInspection],
+    *,
+    collector: _IssueCollector,
+) -> None:
+    for name in HEADLINE_SPLIT_CSV_NAMES:
+        inspection = inspections[name]
+        for row in inspection.selected_rows:
+            if row.values.get("routing_split") != HEADLINE_ROUTING_SPLIT:
+                collector.add(
+                    "headline_routing_split_mismatch",
+                    (
+                        "headline RQ1/RQ3 outputs must use only the "
+                        f"{HEADLINE_ROUTING_SPLIT!r} routing split"
                     ),
                     path=inspection.path,
                     row=row.line_number,
@@ -1429,6 +1506,13 @@ def _validate_primary_outputs(
         _require_literal(row, field="direction", expected="incongruent", path=susceptibility.path, collector=collector)
         _require_literal(row, field="shift_metric", expected="signed_cue_mass", path=susceptibility.path, collector=collector)
         _require_literal(row, field="baseline_channel", expected="entropy", path=susceptibility.path, collector=collector)
+        _require_bool(
+            row,
+            field="clean_tie",
+            expected=False,
+            path=susceptibility.path,
+            collector=collector,
+        )
         if doses:
             for field, expected in (("low_dose", min(doses)), ("high_dose", max(doses))):
                 value = _as_finite_float(row.values.get(field))
@@ -3599,6 +3683,7 @@ def _validate_modeling(
     inspection: CsvInspection,
     *,
     config: AnalysisValidationConfig,
+    expected_n_by_model: Mapping[str, int],
     collector: _IssueCollector,
     availability: _IssueCollector,
 ) -> None:
@@ -3607,8 +3692,8 @@ def _validate_modeling(
     }
     for row in inspection.selected_rows:
         rows_by_model.setdefault(str(row.values.get("model_name")), []).append(row)
-    expected_n = config.source_pairs * CUED_CONDITIONS_PER_PAIR_MODEL
     for model in config.expected_models:
+        expected_n = expected_n_by_model.get(model, 0)
         rows = rows_by_model.get(model, [])
         unavailable_rows = [
             row
@@ -3630,6 +3715,13 @@ def _validate_modeling(
                 unavailable_row,
                 field="formula",
                 expected=MIXED_EFFECTS_FORMULA,
+                path=inspection.path,
+                collector=collector,
+            )
+            _require_bool(
+                unavailable_row,
+                field="clean_tie",
+                expected=False,
                 path=inspection.path,
                 collector=collector,
             )
@@ -3677,6 +3769,13 @@ def _validate_modeling(
                 "fit_method": "statsmodels.BinomialBayesMixedGLM.fit_vb",
             }.items():
                 _require_literal(row, field=field, expected=expected, path=inspection.path, collector=collector)
+            _require_bool(
+                row,
+                field="clean_tie",
+                expected=False,
+                path=inspection.path,
+                collector=collector,
+            )
             _require_available_bool(
                 row,
                 field="converged",
@@ -3896,11 +3995,15 @@ def validate_analysis_package(
         config=config,
         collector=collector,
     )
-    _validate_paired_grid(
+    test_paired_counts = _validate_paired_grid(
         analysis_dir / "paired_shifts.csv",
         config=config,
         expected_spec_hash=spec_hash,
         expected_input_hashes=input_hash_payload,
+        collector=collector,
+    )
+    _validate_headline_routing_splits(
+        inspections,
         collector=collector,
     )
     _validate_primary_selectors(inspections, collector=collector)
@@ -3954,6 +4057,7 @@ def validate_analysis_package(
     _validate_modeling(
         inspections["rq3_modeling.csv"],
         config=config,
+        expected_n_by_model=test_paired_counts,
         collector=collector,
         availability=availability,
     )

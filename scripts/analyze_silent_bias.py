@@ -58,7 +58,8 @@ from biases.analysis.selective import (
 from biases.analysis.statistics import holm_adjust
 
 
-ANALYSIS_VERSION = "silent-bias-p4-v4"
+ANALYSIS_VERSION = "silent-bias-p4-v5"
+HEADLINE_ROUTING_SPLIT = "test"
 OUTPUT_NAMES = (
     "paired_shifts.csv",
     "rq1_silent_shift.csv",
@@ -123,6 +124,32 @@ def _group(
     return dict(grouped)
 
 
+def _select_routing_split(
+    shifts: Sequence[PairedShift],
+    *,
+    routing_split: str,
+) -> tuple[PairedShift, ...]:
+    if routing_split not in {"calibration", "test"}:
+        raise ValueError(
+            "routing_split must be either 'calibration' or 'test'"
+        )
+    invalid = sorted(
+        {
+            str(shift.routing_split)
+            for shift in shifts
+            if shift.routing_split not in {"calibration", "test"}
+        }
+    )
+    if invalid:
+        raise ValueError(
+            "all paired shifts must declare routing_split as calibration "
+            f"or test; observed invalid values: {invalid}"
+        )
+    return tuple(
+        shift for shift in shifts if shift.routing_split == routing_split
+    )
+
+
 def _condition_key(record: ConditionRecord | ScoredPrediction) -> tuple[Any, ...]:
     return (
         record.model_name,
@@ -158,6 +185,7 @@ def _condition_columns(key: tuple[Any, ...]) -> dict[str, Any]:
 def summarize_silent_shift(
     shifts: Sequence[PairedShift],
     *,
+    routing_split: str,
     n_resamples: int,
     seed: int,
 ) -> list[dict[str, Any]]:
@@ -172,7 +200,14 @@ def summarize_silent_shift(
         "js_divergence",
     )
     grouped = _group(
-        (shift for shift in shifts if not shift.flip),
+        (
+            shift
+            for shift in _select_routing_split(
+                shifts,
+                routing_split=routing_split,
+            )
+            if not shift.flip
+        ),
         lambda shift: (
             shift.model_name,
             shift.family,
@@ -217,6 +252,7 @@ def summarize_silent_shift(
             rows.append(
                 {
                     "model_name": key[0],
+                    "routing_split": routing_split,
                     "family": key[1],
                     "direction": key[2],
                     "dose": key[3],
@@ -249,6 +285,7 @@ def summarize_silent_shift(
 def summarize_susceptibility(
     shifts: Sequence[PairedShift],
     *,
+    routing_split: str,
     n_resamples: int,
     seed: int,
 ) -> list[dict[str, Any]]:
@@ -263,7 +300,10 @@ def summarize_susceptibility(
     grouped = _group(
         (
             shift
-            for shift in shifts
+            for shift in _select_routing_split(
+                shifts,
+                routing_split=routing_split,
+            )
             if shift.direction == "incongruent" and not shift.clean_tie
         ),
         lambda shift: (shift.model_name, shift.family, shift.direction),
@@ -282,6 +322,8 @@ def summarize_susceptibility(
             rows.append(
                 {
                     **asdict(result.estimate),
+                    "routing_split": routing_split,
+                    "clean_tie": False,
                     **{
                         field: value
                         for field, value in asdict(result).items()
@@ -615,11 +657,15 @@ def mcnemar_outputs(shifts: Sequence[PairedShift]) -> list[dict[str, Any]]:
 def dose_response_outputs(
     shifts: Sequence[PairedShift],
     *,
+    routing_split: str,
     n_resamples: int,
     seed: int,
 ) -> list[dict[str, Any]]:
     grouped = _group(
-        shifts,
+        _select_routing_split(
+            shifts,
+            routing_split=routing_split,
+        ),
         lambda shift: (
             shift.model_name,
             shift.family,
@@ -640,6 +686,7 @@ def dose_response_outputs(
         rows.append(
             {
                 "model_name": key[0],
+                "routing_split": routing_split,
                 "family": key[1],
                 "direction": key[2],
                 "clean_tie": key[3],
@@ -718,6 +765,7 @@ def _gee_slope_cluster_bootstrap(
 def uncertainty_trend_outputs(
     shifts: Sequence[PairedShift],
     *,
+    routing_split: str,
     n_permutations: int,
     n_resamples: int = 0,
     seed: int,
@@ -731,7 +779,10 @@ def uncertainty_trend_outputs(
     grouped = _group(
         (
             shift
-            for shift in shifts
+            for shift in _select_routing_split(
+                shifts,
+                routing_split=routing_split,
+            )
             if shift.family in SOCIAL_DOSE_LADDERS and shift.dose is not None
         ),
         lambda shift: (shift.model_name, shift.family, shift.direction, shift.clean_tie),
@@ -786,6 +837,7 @@ def uncertainty_trend_outputs(
                     )
                 common = {
                     "model_name": key[0],
+                    "routing_split": routing_split,
                     "family": key[1],
                     "direction": key[2],
                     "clean_tie": key[3],
@@ -950,6 +1002,7 @@ def uncertainty_trend_outputs(
 def uncertainty_by_dose_outputs(
     shifts: Sequence[PairedShift],
     *,
+    routing_split: str,
     n_resamples: int,
     seed: int,
 ) -> list[dict[str, Any]]:
@@ -957,7 +1010,10 @@ def uncertainty_by_dose_outputs(
 
     eligible = [
         shift
-        for shift in shifts
+        for shift in _select_routing_split(
+            shifts,
+            routing_split=routing_split,
+        )
         if (
             shift.family in SOCIAL_DOSE_LADDERS
             and shift.direction == "incongruent"
@@ -1009,6 +1065,7 @@ def uncertainty_by_dose_outputs(
         rows.append(
             {
                 "model_name": key[0],
+                "routing_split": routing_split,
                 "family": key[1],
                 "direction": "incongruent",
                 "clean_tie": False,
@@ -1029,8 +1086,19 @@ def uncertainty_by_dose_outputs(
     return rows
 
 
-def modeling_outputs(shifts: Sequence[PairedShift]) -> list[dict[str, Any]]:
-    by_model = _group(shifts, lambda shift: (shift.model_name,))
+def modeling_outputs(
+    shifts: Sequence[PairedShift],
+    *,
+    routing_split: str,
+) -> list[dict[str, Any]]:
+    selected = _select_routing_split(
+        shifts,
+        routing_split=routing_split,
+    )
+    by_model = _group(
+        (shift for shift in selected if not shift.clean_tie),
+        lambda shift: (shift.model_name,),
+    )
     rows: list[dict[str, Any]] = []
     for model_key in sorted(by_model, key=repr):
         metadata = {
@@ -1062,6 +1130,8 @@ def modeling_outputs(shifts: Sequence[PairedShift]) -> list[dict[str, Any]]:
             rows.append(
                 {
                     "model_name": model_key[0],
+                    "routing_split": routing_split,
+                    "clean_tie": False,
                     "formula": MIXED_EFFECTS_FORMULA,
                     **metadata,
                     "status": "unavailable",
@@ -1072,6 +1142,8 @@ def modeling_outputs(shifts: Sequence[PairedShift]) -> list[dict[str, Any]]:
         model_rows = [
             {
                 "model_name": model_key[0],
+                "routing_split": routing_split,
+                "clean_tie": False,
                 "formula": result.formula,
                 "group_column": result.group_column,
                 "n": result.n,
@@ -1224,6 +1296,14 @@ def main() -> None:
         "missing_channel_verdict_policy": "exclude_without_fallback",
         "accepted_flip_policy": "matching_channel_clean_vs_cued_verdict",
         "tie_policy": "strict_three_class",
+        "routing_split_policy": {
+            "calibration": "threshold_selection_only",
+            "headline_estimation": HEADLINE_ROUTING_SPLIT,
+        },
+        "mixed_model_population": {
+            "routing_split": HEADLINE_ROUTING_SPLIT,
+            "clean_tie": False,
+        },
         "formula": MIXED_EFFECTS_FORMULA,
     }
     spec_hash = spec_sha256(spec)
@@ -1292,11 +1372,13 @@ def main() -> None:
         "paired_shifts.csv": [shift.to_dict() for shift in shifts],
         "rq1_silent_shift.csv": summarize_silent_shift(
             shifts,
+            routing_split=HEADLINE_ROUTING_SPLIT,
             n_resamples=args.bootstrap_resamples,
             seed=args.seed,
         ),
         "rq1_susceptibility.csv": summarize_susceptibility(
             shifts,
+            routing_split=HEADLINE_ROUTING_SPLIT,
             n_resamples=args.bootstrap_resamples,
             seed=args.seed,
         ),
@@ -1307,21 +1389,27 @@ def main() -> None:
         "rq2_mcnemar.csv": mcnemar_outputs(shifts),
         "rq3_dose_response.csv": dose_response_outputs(
             shifts,
+            routing_split=HEADLINE_ROUTING_SPLIT,
             n_resamples=args.bootstrap_resamples,
             seed=args.seed,
         ),
         "rq3_uncertainty_trend.csv": uncertainty_trend_outputs(
             shifts,
+            routing_split=HEADLINE_ROUTING_SPLIT,
             n_permutations=args.trend_permutations,
             n_resamples=args.bootstrap_resamples,
             seed=args.seed,
         ),
         "rq3_uncertainty_by_dose.csv": uncertainty_by_dose_outputs(
             shifts,
+            routing_split=HEADLINE_ROUTING_SPLIT,
             n_resamples=args.bootstrap_resamples,
             seed=args.seed,
         ),
-        "rq3_modeling.csv": modeling_outputs(shifts),
+        "rq3_modeling.csv": modeling_outputs(
+            shifts,
+            routing_split=HEADLINE_ROUTING_SPLIT,
+        ),
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)

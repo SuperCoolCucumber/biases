@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-ASSET_VERSION = "silent-bias-paper-assets-v2"
+ASSET_VERSION = "silent-bias-paper-assets-v3"
 REQUIRED_ANALYSIS_FILES = (
     "paired_shifts.csv",
     "rq1_silent_shift.csv",
@@ -282,7 +282,12 @@ def _decision_ci_positive(row: Mapping[str, Any], *, p_field: str) -> str:
 
 
 def _rq1_silent_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    primary = [row for row in rows if _truthy(row.get("primary"))]
+    primary = [
+        row
+        for row in rows
+        if _truthy(row.get("primary"))
+        and row.get("routing_split") == "test"
+    ]
     if not primary:
         primary = [
             row
@@ -290,6 +295,7 @@ def _rq1_silent_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             if row.get("metric") == "signed_cue_mass"
             and row.get("direction") == "incongruent"
             and not _truthy(row.get("clean_tie"))
+            and row.get("routing_split") == "test"
         ]
     return _stable_rows(primary, ("model_name", "family", "dose"))
 
@@ -297,10 +303,18 @@ def _rq1_silent_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 def _rq1_susceptibility_rows(
     rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    primary = [row for row in rows if _truthy(row.get("primary"))]
+    primary = [
+        row
+        for row in rows
+        if _truthy(row.get("primary"))
+        and row.get("routing_split") == "test"
+    ]
     if not primary:
         primary = [
-            row for row in rows if row.get("shift_metric") == "signed_cue_mass"
+            row
+            for row in rows
+            if row.get("shift_metric") == "signed_cue_mass"
+            and row.get("routing_split") == "test"
         ]
     return _stable_rows(primary, ("model_name", "family"))
 
@@ -339,19 +353,30 @@ def _headline_threshold_rows(
 
 
 def _rq3_dose_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    primary = [row for row in rows if _truthy(row.get("primary"))]
+    primary = [
+        row
+        for row in rows
+        if _truthy(row.get("primary"))
+        and row.get("routing_split") == "test"
+    ]
     if not primary:
         primary = [
             row
             for row in rows
             if row.get("direction") == "incongruent"
             and not _truthy(row.get("clean_tie"))
+            and row.get("routing_split") == "test"
         ]
     return _stable_rows(primary, ("model_name", "family"))
 
 
 def _rq3_trend_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    primary = [row for row in rows if _truthy(row.get("primary"))]
+    primary = [
+        row
+        for row in rows
+        if _truthy(row.get("primary"))
+        and row.get("routing_split") == "test"
+    ]
     if not primary:
         primary = [
             row
@@ -360,6 +385,7 @@ def _rq3_trend_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             and row.get("metric") == "cued_entropy"
             and row.get("stable_set") == "pre_first_flip"
             and not _truthy(row.get("clean_tie"))
+            and row.get("routing_split") == "test"
         ]
     return _stable_rows(primary, ("model_name", "family"))
 
@@ -367,9 +393,15 @@ def _rq3_trend_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 def _rq3_uncertainty_dose_rows(
     rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    primary = [row for row in rows if _truthy(row.get("primary"))]
+    primary = [
+        row
+        for row in rows
+        if _truthy(row.get("primary"))
+        and row.get("routing_split") == "test"
+    ]
     return _stable_rows(
-        primary or rows,
+        primary
+        or [row for row in rows if row.get("routing_split") == "test"],
         ("model_name", "family", "normalized_dose", "dose"),
     )
 
@@ -679,6 +711,9 @@ def build_results_digest(inputs: Mapping[str, AnalysisInput]) -> str:
             ),
             f"- Paired clean–cue comparisons: {len(paired_rows)}"
             + ".",
+            "- Headline RQ1 and RQ3 estimates use only routing_split=test; "
+            "calibration rows are retained only in paired artifacts and RQ2 "
+            "threshold selection.",
             "- This digest describes only the supplied artifacts; claims for unrun "
             "models or a larger dataset remain pending.",
         )
@@ -923,6 +958,7 @@ def _eligible_paired_shifts(rows: Sequence[Mapping[str, Any]]) -> list[dict[str,
         and not _truthy(row.get("clean_tie"))
         and not _truthy(row.get("flip"))
         and _number(row.get("signed_cue_mass")) is not None
+        and row.get("routing_split") == "test"
     ]
 
 
@@ -1179,6 +1215,7 @@ def _plot_dose_response(
             and item.get("direction") == "incongruent"
             and not _truthy(item.get("clean_tie"))
             and _number(item.get("dose")) is not None
+            and item.get("routing_split") == "test"
         ]
         observed_doses = sorted(
             {float(item["dose"]) for item in panel_rows if _number(item.get("dose")) is not None}

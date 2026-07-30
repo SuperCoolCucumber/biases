@@ -42,6 +42,19 @@ The conventional CSV outputs are:
 
 Every CSV row carries the analysis-spec hash and direct-input hashes.
 
+## Routing-split population
+
+`paired_shifts.csv` retains both deterministic source splits for auditability.
+All aggregate RQ1 and RQ3 outputs are estimated from `routing_split=test`
+only, and every emitted row declares that split. RQ2 retains split-stratified
+descriptive calibration outputs, while calibration rows enter the headline
+threshold-transfer analysis only to select the clean abstention thresholds.
+The mixed-effects model also excludes `clean_tie=true` rows, matching the
+preregistered primary population; tie-stratified RQ1 and family-specific RQ3
+summaries remain explicit non-primary robustness rows on the test split.
+Missing or unknown routing-split values make analysis fail rather than being
+silently dropped.
+
 ## Mixed-effects model
 
 The exact preregistered paper formula is:
@@ -93,6 +106,8 @@ unavailable and never invents a result.
 Paper outputs are deterministic for identical input bytes:
 
 - input rows and groups are stably sorted;
+- headline RQ1 and RQ3 assets require the test split, including empirical
+  distributions read from `paired_shifts.csv`;
 - headline RQ2 assets use only MSP, the test split, and non-tie rows before
   selecting the highest incongruent dose, so confidence channels are never
   pooled;
