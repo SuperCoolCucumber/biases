@@ -359,3 +359,29 @@ JSON artifacts:
 The smoke gate is complete without changing the preregistered 99% threshold.
 This does not validate the 198-pair pilot or any RQ result: pilot inference,
 cross-model artifact validation, analysis, and paper assets remain pending.
+
+## 2026-07-30 Analysis-Package Semantic Gate
+
+`scripts/validate_silent_bias_analysis.py` is a post-analysis package gate.
+Its Stage A and Stage B arguments bind provenance to the exact direct-input
+bytes, but it does not parse those JSONL files or rederive the analysis. Run
+`scripts/validate_silent_bias_artifacts.py` first against the source CSV and
+every model artifact directory; only that earlier gate validates raw records,
+experiment specs, channel availability, and the Stage A/B grid.
+
+The package gate recomputes input, CSV, provenance, manifest, and paper-asset
+hashes; checks emitted CSV schemas and equations; requires the complete
+32-cell paired-shift grid for every expected model; checks preregistered
+primary selectors; and byte-checks two deterministic paper-asset
+regenerations.
+
+The validation report separates structural integrity from scientific
+availability. Missing estimates caused by legitimate degeneracy, such as zero
+accepted examples under a clean-calibrated threshold or an unavailable
+mixed-effects fit, are explicit availability warnings by default. They can be
+promoted to a failing exit status with `--require-primary-available`.
+Malformed counts, selectors, provenance, hashes, model coverage, paired grids,
+or asset packages always fail.
+
+This gate changes post-inference validation only; the active pilot inference
+remains pinned to the previously recorded experiment commit.

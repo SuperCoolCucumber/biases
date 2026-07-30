@@ -132,3 +132,43 @@ impossible cue dose as an observed sensitivity threshold.
 
 Regenerate the assets in two clean output directories and compare their hashes
 before a full paper run is accepted.
+
+## Validate a completed package
+
+First run `scripts/validate_silent_bias_artifacts.py` against the source CSV and
+every model artifact directory. That is the raw Stage A/B semantic gate: it
+checks JSONL schemas, experiment specs, record identities, channel
+availability, and the experimental grid.
+
+After analysis and both asset regenerations, run the package gate:
+
+```bash
+uv run --extra analysis python scripts/validate_silent_bias_analysis.py \
+  --analysis-dir "$BIASES_ARTIFACT_ROOT/outputs/analysis" \
+  --stage-a \
+    "$BIASES_ARTIFACT_ROOT/outputs/full/model-a/silent_bias_stage_a_uncertainty_scores.jsonl" \
+    "$BIASES_ARTIFACT_ROOT/outputs/full/model-b/silent_bias_stage_a_uncertainty_scores.jsonl" \
+  --stage-b \
+    "$BIASES_ARTIFACT_ROOT/outputs/full/model-a/silent_bias_stage_b_uncertainty_scores.jsonl" \
+    "$BIASES_ARTIFACT_ROOT/outputs/full/model-b/silent_bias_stage_b_uncertainty_scores.jsonl" \
+  --asset-package "$BIASES_ARTIFACT_ROOT/outputs/analysis/paper_assets" reports/paper_results.md \
+  --asset-package "$BIASES_ARTIFACT_ROOT/outputs/analysis/paper_assets_repro" "$BIASES_ARTIFACT_ROOT/outputs/analysis/report_repro/paper_results.md" \
+  --expected-model model-a \
+  --expected-model model-b \
+  --source-pairs 3337 \
+  --report-path "$BIASES_ARTIFACT_ROOT/outputs/analysis/package_validation.json"
+```
+
+List one Stage A and Stage B path per judge, and repeat `--expected-model` once
+per judge. This is a post-analysis package validator. The Stage paths bind the
+analysis provenance to exact direct-input bytes; this command does not parse
+those JSONL files or rederive the analysis. It checks CSV schemas and internal
+equations, the emitted paired grid and model coverage, manifests, paper assets,
+and preregistered primary selectors. It must therefore be layered after
+`validate_silent_bias_artifacts.py`, not used as a substitute for it.
+
+Missing estimates caused by legitimate data degeneracy (for example, zero
+accepted examples at a transferred threshold) are reported separately as
+availability warnings. Use `--require-primary-available` when a workflow
+should promote those warnings to a nonzero exit code. Structural integrity
+failures always return a nonzero exit code.
