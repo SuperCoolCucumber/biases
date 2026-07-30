@@ -544,6 +544,10 @@ def test_joint_verbalized_parser_accepts_only_atomic_pairs(
             72.5,
         ),
         ("1. T\n2. 100", VerdictLabel.TIE, 100.0),
+        ("1: A\n2: 81", VerdictLabel.A, 81.0),
+        ("1: T\n2: 0", VerdictLabel.TIE, 0.0),
+        ("1) B\n2) 64.5", VerdictLabel.B, 64.5),
+        ("1) A\n2) 100", VerdictLabel.A, 100.0),
         ("A, 99", VerdictLabel.A, 99.0),
         ("B, 99.5", VerdictLabel.B, 99.5),
     ),
@@ -568,9 +572,20 @@ def test_joint_verbalized_parser_accepts_exact_hermes_forms(
         "T,",
         "Line 1: A\nLine 2: 80\nExplanation follows.",
         "1. B\n2. 75\nExplanation follows.",
+        "1: A\n2: 80\nExplanation follows.",
+        "1) B\n2) 75\nExplanation follows.",
+        "1: A\n2) 80",
+        "1) A\n2: 80",
+        "1:A\n2: 80",
+        "1: a\n2: 80",
+        "1: [A]\n2: 80",
+        "1: A\n2: Confidence: 80",
+        "1: A\n2: 80%",
         "T, 60 because the answers are similar",
         "Line 1: A\nLine 2: 100.1",
         "1. B\n2. -1",
+        "1: 1\n2: 80",
+        "1) A\n2) 100.1",
         "T, 90%",
     ),
 )
@@ -647,9 +662,9 @@ def test_verbalized_generation_paths_use_the_joint_parser(
         None,
     )
 
-    judge.model.responses = ["B\nConfidence: 88\nbrief rationale", "Answer A: 95"]
+    judge.model.responses = ["1: B\n2: 88", "Answer A: 95"]
     assert judge.verbalize_confidence_batch(["one", "two"]) == [
-        (VerdictLabel.B, "B\nConfidence: 88\nbrief rationale", 88.0),
+        (VerdictLabel.B, "1: B\n2: 88", 88.0),
         (None, "Answer A: 95", None),
     ]
 

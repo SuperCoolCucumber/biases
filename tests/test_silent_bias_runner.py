@@ -242,7 +242,7 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
     assert (
         tuned_summary["verbalized_output_parser_version"]
         == VERBALIZED_OUTPUT_PARSER_VERSION
-        == "strict_v2"
+        == "strict_v3"
     )
     assert tuned_summary["logprobs_mode"] == CONSTRAINED_LOGPROBS_MODE
     assert tuned_summary["verbalized_parse_status_counts"] == {
@@ -869,7 +869,7 @@ def test_stage_b_rejects_stage_a_summary_from_an_old_verbalized_parser(
     pair_summary_path = Path(summary["pair_summary_path"])
     rows = _read_jsonl(pair_summary_path)
     for row in rows:
-        row.pop("verbalized_output_parser_version")
+        row["verbalized_output_parser_version"] = "strict_v2"
     pair_summary_path.write_text(
         "".join(f"{json.dumps(row)}\n" for row in rows),
         encoding="utf-8",

@@ -519,3 +519,28 @@ the analysis-manifest hash is
 `bb4ae745514e61578f87264469b8a4284b3e2773956f3671989ff0705ad9240c`;
 and the package-validation hash is
 `acda8d84030dba6bfdc79ab42dc2b6205505ef1c274b9a0d2e5e03d9cd46794f`.
+
+## 2026-07-30 Hermes Full-Data Parser Recovery (`strict_v3`)
+
+The full-data Hermes clean stage produced all 6,674 expected records but
+stopped at the preregistered verbalized-confidence gate: 6,592 responses
+parsed (98.771%), below 99%. No Hermes cued-condition generation or downstream
+analysis started. The failed job, logs, raw Stage-A outputs, and invalidated
+dependency are retained as forensic evidence.
+
+A read-only audit found that 28 of the 82 rejected responses use two complete,
+unambiguous atomic formats: `1: {A|B|T}` followed by `2: {0--100}`, and
+`1) {A|B|T}` followed by `2) {0--100}`. A separately versioned
+`verbalized_output_parser_version=strict_v3` accepts only whole-response
+matches for those two forms. It continues to reject answer numbers, missing or
+out-of-range scores, trailing prose, and ambiguous responses. Reprocessing the
+preserved raw text projects 6,620/6,674 parsed responses (99.1909%) without
+changing the gate; 54 responses remain unparseable.
+
+The user approved this narrow parser-only recovery. Before resuming Hermes
+Stage B, run the parser migration transaction under the new code commit into a
+new versioned artifact root, retain the original artifact directories
+immutably, and record migration reports with exact pre/post hashes.
+Rematerialize every completed model under the same parser version; do not
+regenerate clean inference. Regenerate model validation and completion
+attestations, then run the unchanged preregistered analysis.

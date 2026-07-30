@@ -116,10 +116,10 @@ from their stored three-label probabilities: missing allowed-token logits are
 not recoverable. They must be retained only as invalidated audit artifacts and
 rerun before analysis.
 
-### Verbalized-output contract (`strict_v2`)
+### Verbalized-output contract (`strict_v3`)
 
 The verbalized-confidence channel has a parser version independent of the
-constrained verdict parser. The accepted `strict_v2` forms are:
+constrained verdict parser. `strict_v3` retains all `strict_v2` forms:
 
 - the existing verdict/confidence line forms, retaining their backward-
   compatible allowance for a trailing rationale that contains no additional
@@ -129,23 +129,40 @@ constrained verdict parser. The accepted `strict_v2` forms are:
 - `1. {A|B|T}` followed by `2. {0--100}`; or
 - the single-line form `{A|B|T}, {0--100}`.
 
-Each of the three newly added forms must match the whole response. Missing
+It additionally accepts exactly two complete enumerated forms observed in the
+preserved Hermes full-data clean run:
+
+- `1: {A|B|T}` followed by `2: {0--100}`; or
+- `1) {A|B|T}` followed by `2) {0--100}`.
+
+Each enumerated or comma form must match the whole response. Missing
 scores, answer numbers in place of `A`/`B`/`T`, out-of-range values, prose
 continuations after a new form, and otherwise ambiguous responses remain
-unparseable. This extension was fixed after the corrected Hermes pilot failed
-closed at 364/396 parsed clean responses: 29 of the 32 rejected responses were
-exact instances of the three new atomic forms. The three remaining responses
-are unavailable because they use an answer number, omit the confidence score,
-or append explanatory prose to an otherwise parseable pair. Applying
-`strict_v2` therefore gives 393/396 availability (99.24%) without changing the
-preregistered 99% gate.
+unparseable.
+
+The earlier `strict_v2` extension was fixed after the corrected Hermes pilot
+failed closed at 364/396 parsed clean responses: 29 of the 32 rejected
+responses were exact instances of the three new atomic forms. The three
+remaining responses are unavailable because they use an answer number, omit
+the confidence score, or append explanatory prose to an otherwise parseable
+pair. Applying `strict_v2` therefore gives 393/396 availability (99.24%)
+without changing the preregistered 99% gate.
+
+The full-data Hermes clean run then failed closed at 6,592/6,674 parsed
+responses (98.771%). A read-only audit found that 28 of the 82 rejected
+responses use only the two additional complete enumerated forms above.
+`strict_v3` projects 6,620/6,674 parsed responses (99.1909%), leaving 54
+responses unparseable. This parser-only recovery was approved after the
+clean-stage failure and before any Hermes cued-condition inference. It does
+not lower the 99% availability gate or add a prose/ambiguity fallback. All
+preserved full-run artifacts must be rematerialized from their original raw
+outputs under one parser version before cross-model analysis.
 
 Every raw record, flat score, pair summary, and stage summary records
 `verbalized_output_parser_version`. Resume and artifact validation reject a
 missing or stale value. Stored raw verbalized text may be rematerialized with
 the migration CLI; migration must preserve record IDs, pairing keys, input and
-spec hashes, and the original raw outputs. This parser amendment is frozen
-before any Hermes cued-condition inference or full-data inference.
+spec hashes, and the original raw outputs.
 
 ### Model matrix amendment (2026-07-30)
 

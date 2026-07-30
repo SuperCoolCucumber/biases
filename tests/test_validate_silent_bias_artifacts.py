@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -245,17 +246,7 @@ def _protected_record_fields(output_dir: Path) -> list[dict[str, object]]:
             output_dir / f"silent_bias_{stage}_run_records.jsonl"
         )
         for row in rows:
-            protected.append(
-                {
-                    "record_id": row["record_id"],
-                    "pair_key": row["pair_key"],
-                    "condition_group_id": row["condition_group_id"],
-                    "ordering_twin_key": row["ordering_twin_key"],
-                    "spec_hash": row["spec_hash"],
-                    "input_file_hash": row["input_file_hash"],
-                    "clean_record_id": row["condition"]["clean_record_id"],
-                }
-            )
+            protected.append(migration_module._preserved_fields(row))
     return protected
 
 
@@ -639,6 +630,18 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
     report_path = tmp_path / "migration-report.json"
     _write_source(csv_path)
     _run_fixture(csv_path, source_dir, registry_name="qwen3-4b")
+    stage_a_raw_path = (
+        source_dir / "silent_bias_stage_a_run_records.jsonl"
+    )
+    stage_a_raw_rows = _read_jsonl(stage_a_raw_path)
+    recovered_forms = ("1: A\n2: 81", "1) A\n2) 64.5")
+    for row, raw_output in zip(
+        stage_a_raw_rows,
+        recovered_forms,
+        strict=True,
+    ):
+        row["metadata"]["verbalized_raw_output"] = raw_output
+    _write_jsonl(stage_a_raw_path, stage_a_raw_rows)
     _degrade_parser_artifacts(source_dir)
     protected_before = _protected_record_fields(source_dir)
 
@@ -651,12 +654,39 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
     assert report["passed"] is True
     assert json.loads(report_path.read_text(encoding="utf-8")) == report
     assert report["records"] == {"stage_a": 2, "stage_b": 32}
+    assert report["dropped_incomplete_tail"] == {
+        "stage_a": False,
+        "stage_b": False,
+    }
     assert report["logprobs_mode"] == {
         "stage_a": CONSTRAINED_LOGPROBS_MODE,
         "stage_b": CONSTRAINED_LOGPROBS_MODE,
     }
     assert _protected_record_fields(destination_dir) == protected_before
     assert _validate(csv_path, destination_dir)["passed"] is True
+    expected_filenames = {
+        f"silent_bias_{stage}_{suffix}.jsonl"
+        for stage in ("stage_a", "stage_b")
+        for suffix in ("run_records", "uncertainty_scores", "pair_summary")
+    } | {
+        f"silent_bias_{stage}_{suffix}.json"
+        for stage in ("stage_a", "stage_b")
+        for suffix in ("summary", "planning_issues")
+    }
+    assert set(report["source_artifact_sha256"]) == expected_filenames
+    assert set(report["rematerialized_artifact_sha256"]) == expected_filenames
+    for filename, expected_hash in report["source_artifact_sha256"].items():
+        assert (
+            hashlib.sha256((source_dir / filename).read_bytes()).hexdigest()
+            == expected_hash
+        )
+    for filename, expected_hash in report[
+        "rematerialized_artifact_sha256"
+    ].items():
+        assert (
+            hashlib.sha256((destination_dir / filename).read_bytes()).hexdigest()
+            == expected_hash
+        )
     source_rows = _read_jsonl(
         source_dir / "silent_bias_stage_a_run_records.jsonl"
     )
@@ -675,15 +705,41 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
     assert (
         destination_rows[0]["metadata"]["verbalized_output_parser_version"]
         == VERBALIZED_OUTPUT_PARSER_VERSION
-        == "strict_v2"
+        == "strict_v3"
     )
     assert destination_rows[0]["metadata"]["max_num_batched_tokens"] is None
     assert destination_rows[0]["metadata"]["max_num_seqs"] is None
     assert destination_rows[0]["uncertainty"]["logit"]["entropy"] != 999.0
     assert (
         destination_rows[0]["uncertainty"]["verbalized"]["confidence"]
-        == pytest.approx(0.8)
+        == pytest.approx(0.81)
     )
+    assert [
+        row["metadata"]["verbalized_raw_output"] for row in source_rows
+    ] == list(recovered_forms)
+    assert [
+        row["metadata"]["verbalized_raw_output"] for row in destination_rows
+    ] == list(recovered_forms)
+    assert {
+        row["metadata"]["verbalized_parse_status"]
+        for row in destination_rows
+    } == {"parsed"}
+    assert [
+        row["uncertainty"]["verbalized"]["confidence"]
+        for row in destination_rows
+    ] == pytest.approx([0.81, 0.645])
+    destination_flat_rows = _read_jsonl(
+        destination_dir / "silent_bias_stage_a_uncertainty_scores.jsonl"
+    )
+    destination_pair_rows = _read_jsonl(
+        destination_dir / "silent_bias_stage_a_pair_summary.jsonl"
+    )
+    assert [
+        row["verbalized_confidence"] for row in destination_flat_rows
+    ] == pytest.approx([0.81, 0.645])
+    assert {
+        row["verbalized_parse_status"] for row in destination_pair_rows
+    } == {"parsed"}
     for stage in ("stage_a", "stage_b"):
         summary = json.loads(
             (
@@ -701,6 +757,49 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
         assert summary["logprobs_mode"] == CONSTRAINED_LOGPROBS_MODE
         assert summary["max_num_batched_tokens"] is None
         assert summary["max_num_seqs"] is None
+
+
+def test_validator_rejects_strict_v2_verbalized_provenance(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    stale_dir = tmp_path / "stale-v2"
+    _write_source(csv_path)
+    _run_fixture(csv_path, stale_dir, registry_name="qwen3-4b")
+
+    for stage in ("stage_a", "stage_b"):
+        raw_path = stale_dir / f"silent_bias_{stage}_run_records.jsonl"
+        score_path = (
+            stale_dir / f"silent_bias_{stage}_uncertainty_scores.jsonl"
+        )
+        pair_path = stale_dir / f"silent_bias_{stage}_pair_summary.jsonl"
+        summary_path = stale_dir / f"silent_bias_{stage}_summary.json"
+        raw_rows = _read_jsonl(raw_path)
+        score_rows = _read_jsonl(score_path)
+        pair_rows = _read_jsonl(pair_path)
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        for row in raw_rows:
+            row["metadata"]["verbalized_output_parser_version"] = "strict_v2"
+        for row in score_rows:
+            row["verbalized_output_parser_version"] = "strict_v2"
+        for row in pair_rows:
+            row["verbalized_output_parser_version"] = "strict_v2"
+        summary["verbalized_output_parser_version"] = "strict_v2"
+        _write_jsonl(raw_path, raw_rows)
+        _write_jsonl(score_path, score_rows)
+        _write_jsonl(pair_path, pair_rows)
+        summary_path.write_text(
+            f"{json.dumps(summary)}\n",
+            encoding="utf-8",
+        )
+
+    report = _validate(csv_path, stale_dir)
+
+    assert report["passed"] is False
+    assert (
+        report["error_counts_by_code"]["stale_verbalized_parser_version"]
+        >= 8
+    )
 
 
 def test_parser_migration_marks_undeclared_legacy_logprobs_as_raw(
@@ -1128,6 +1227,98 @@ def test_parser_migration_destination_transaction_rolls_back_and_retries(
     assert retried["passed"] is True
 
 
+def test_parser_migration_rejects_unrelated_destination_contents(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    source_dir = tmp_path / "legacy"
+    destination_dir = tmp_path / "strict"
+    stale_contract = destination_dir / "campaign_execution_contract.json"
+    _write_source(csv_path)
+    _run_fixture(csv_path, source_dir, registry_name="qwen3-4b")
+    _degrade_parser_artifacts(source_dir)
+    destination_dir.mkdir()
+    stale_contract.write_text('{"parser":"strict_v2"}\n', encoding="utf-8")
+    before = stale_contract.read_bytes()
+
+    with pytest.raises(FileExistsError, match="absent or empty"):
+        migration_module.migrate_artifact_directory(
+            source_dir=source_dir,
+            destination_dir=destination_dir,
+        )
+
+    assert stale_contract.read_bytes() == before
+    assert list(destination_dir.iterdir()) == [stale_contract]
+
+
+def test_parser_migration_rejects_source_drift_before_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    source_dir = tmp_path / "legacy"
+    destination_dir = tmp_path / "strict"
+    _write_source(csv_path)
+    _run_fixture(csv_path, source_dir, registry_name="qwen3-4b")
+    _degrade_parser_artifacts(source_dir)
+    original_builder = migration_module._build_migration
+
+    def _mutating_builder(
+        source: Path,
+        *,
+        target_dir: Path,
+    ) -> object:
+        result = original_builder(source, target_dir=target_dir)
+        raw_path = source / "silent_bias_stage_a_run_records.jsonl"
+        raw_path.write_bytes(raw_path.read_bytes() + b"\n")
+        return result
+
+    monkeypatch.setattr(
+        migration_module,
+        "_build_migration",
+        _mutating_builder,
+    )
+    with pytest.raises(RuntimeError, match="changed during"):
+        migration_module.migrate_artifact_directory(
+            source_dir=source_dir,
+            destination_dir=destination_dir,
+        )
+    assert not destination_dir.exists()
+
+
+def test_parser_migration_rejects_nonderived_record_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    source_dir = tmp_path / "legacy"
+    destination_dir = tmp_path / "strict"
+    _write_source(csv_path)
+    _run_fixture(csv_path, source_dir, registry_name="qwen3-4b")
+    _degrade_parser_artifacts(source_dir)
+    original_migrator = migration_module.migrate_record_to_current_parser
+
+    def _mutating_migrator(
+        row: object,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        migrated = original_migrator(row, **kwargs)
+        migrated["metadata"]["verbalized_prompt_hash"] = "tampered"
+        return migrated
+
+    monkeypatch.setattr(
+        migration_module,
+        "migrate_record_to_current_parser",
+        _mutating_migrator,
+    )
+    with pytest.raises(AssertionError, match="protected provenance"):
+        migration_module.migrate_artifact_directory(
+            source_dir=source_dir,
+            destination_dir=destination_dir,
+        )
+    assert not destination_dir.exists()
+
+
 def test_parser_migration_in_place_transaction_restores_and_retries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1182,7 +1373,7 @@ def test_parser_migration_preflights_planning_and_report_collisions(
     )
     planning_collision.write_text("do not overwrite\n", encoding="utf-8")
 
-    with pytest.raises(FileExistsError, match="destination artifacts"):
+    with pytest.raises(FileExistsError, match="destination_dir"):
         migration_module.migrate_artifact_directory(
             source_dir=source_dir,
             destination_dir=destination_dir,
@@ -1192,7 +1383,7 @@ def test_parser_migration_preflights_planning_and_report_collisions(
 
     report_collision = (
         source_dir
-        / "silent_bias_stage_a_run_records.jsonl.pre-strict-v2.bak"
+        / "silent_bias_stage_a_run_records.jsonl.pre-strict-v3.bak"
     )
     with pytest.raises(ValueError, match="report_path"):
         migration_module.migrate_artifact_directory(
@@ -1200,7 +1391,7 @@ def test_parser_migration_preflights_planning_and_report_collisions(
             in_place=True,
             report_path=report_collision,
         )
-    assert not list(source_dir.glob("*.pre-strict-v2.bak"))
+    assert not list(source_dir.glob("*.pre-strict-v3.bak"))
 
 
 def test_parser_migration_report_failure_cannot_partially_commit(

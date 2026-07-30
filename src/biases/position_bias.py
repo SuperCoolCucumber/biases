@@ -44,7 +44,7 @@ DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-14B-Instruct"
 DEFAULT_DATA_PATH = data_path("processed", "mtbench_full.csv")
 DEFAULT_MAX_MODEL_LEN = 8192
 JUDGE_OUTPUT_PARSER_VERSION = "strict_v3"
-VERBALIZED_OUTPUT_PARSER_VERSION = "strict_v2"
+VERBALIZED_OUTPUT_PARSER_VERSION = "strict_v3"
 CONSTRAINED_LOGPROBS_MODE = "processed_logprobs"
 VerbalizedParseStatus = Literal[
     "parsed",
@@ -644,6 +644,14 @@ _HERMES_VERBALIZED_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"1\. (?P<verdict>[ABT])\n"
         r"2\. (?P<confidence>\d+(?:\.\d+)?)"
+    ),
+    re.compile(
+        r"1: (?P<verdict>[ABT])\n"
+        r"2: (?P<confidence>[0-9]+(?:\.[0-9]+)?)"
+    ),
+    re.compile(
+        r"1\) (?P<verdict>[ABT])\n"
+        r"2\) (?P<confidence>[0-9]+(?:\.[0-9]+)?)"
     ),
     re.compile(
         r"(?P<verdict>[ABT]), "

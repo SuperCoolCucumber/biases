@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,9 @@ from biases.stage_planning import (
 StageName = Literal["stage_a", "stage_b"]
 LogprobsMode = Literal["raw_logprobs", "processed_logprobs"]
 LEGACY_LOGPROBS_MODE: LogprobsMode = "raw_logprobs"
+DEFAULT_BACKUP_SUFFIX = (
+    f".pre-{VERBALIZED_OUTPUT_PARSER_VERSION.replace('_', '-')}.bak"
+)
 VALID_LOGPROBS_MODES = frozenset(
     (LEGACY_LOGPROBS_MODE, CONSTRAINED_LOGPROBS_MODE)
 )
@@ -56,13 +60,31 @@ PLANNING_FILENAMES: Mapping[StageName, str] = {
     "stage_b": "silent_bias_stage_b_planning_issues.json",
 }
 PROTECTED_FIELDS = (
-    "record_id",
-    "pair_key",
-    "condition_group_id",
-    "ordering_twin_key",
-    "spec_hash",
-    "input_file_hash",
-    "clean_record_id",
+    "all top-level fields except metadata and uncertainty",
+    "metadata except parser versions, parse status, verbalized verdict, "
+    "logprobs mode, and scheduler tuning",
+    "uncertainty.consistency.run_count",
+    "uncertainty.consistency.verdict_counts",
+)
+MUTABLE_METADATA_FIELDS = frozenset(
+    (
+        "judge_output_parser_version",
+        "verbalized_output_parser_version",
+        "verbalized_parse_status",
+        "verbalized_verdict",
+        "logprobs_mode",
+        "max_num_batched_tokens",
+        "max_num_seqs",
+    )
+)
+SOURCE_ARTIFACT_FILENAMES = frozenset(
+    (
+        *RAW_FILENAMES.values(),
+        *SCORE_FILENAMES.values(),
+        *PAIR_FILENAMES.values(),
+        *SUMMARY_FILENAMES.values(),
+        *PLANNING_FILENAMES.values(),
+    )
 )
 
 
@@ -138,17 +160,80 @@ def _record_sort_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
 
 
 def _preserved_fields(row: Mapping[str, Any]) -> dict[str, Any]:
-    condition = row.get("condition")
-    condition = condition if isinstance(condition, Mapping) else {}
+    metadata = row.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    uncertainty = row.get("uncertainty")
+    uncertainty = uncertainty if isinstance(uncertainty, Mapping) else {}
+    consistency = uncertainty.get("consistency")
+    consistency = consistency if isinstance(consistency, Mapping) else None
     return {
-        "record_id": row.get("record_id"),
-        "pair_key": row.get("pair_key"),
-        "condition_group_id": row.get("condition_group_id"),
-        "ordering_twin_key": row.get("ordering_twin_key"),
-        "spec_hash": row.get("spec_hash"),
-        "input_file_hash": row.get("input_file_hash"),
-        "clean_record_id": condition.get("clean_record_id"),
+        "top_level": {
+            key: value
+            for key, value in row.items()
+            if key not in {"metadata", "uncertainty"}
+        },
+        "metadata": {
+            key: value
+            for key, value in metadata.items()
+            if key not in MUTABLE_METADATA_FIELDS
+        },
+        "consistency_primitives": (
+            {
+                "run_count": consistency.get("run_count"),
+                "verdict_counts": consistency.get("verdict_counts"),
+            }
+            if consistency is not None
+            else None
+        ),
     }
+
+
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _source_artifact_hashes(source_dir: Path) -> dict[str, str]:
+    return {
+        filename: _sha256_file(path)
+        for filename in sorted(SOURCE_ARTIFACT_FILENAMES)
+        if (path := source_dir / filename).is_file()
+    }
+
+
+def _assert_source_unchanged(
+    source_dir: Path,
+    expected_hashes: Mapping[str, str],
+) -> None:
+    observed = _source_artifact_hashes(source_dir)
+    if observed != dict(expected_hashes):
+        changed = sorted(
+            filename
+            for filename in set(observed) | set(expected_hashes)
+            if observed.get(filename) != expected_hashes.get(filename)
+        )
+        raise RuntimeError(
+            "source artifacts changed during parser migration: "
+            f"{changed!r}"
+        )
+
+
+def _require_empty_destination(path: Path) -> None:
+    if not path.exists():
+        return
+    if not path.is_dir():
+        raise FileExistsError(f"destination_dir is not a directory: {path}")
+    if any(path.iterdir()):
+        raise FileExistsError(
+            f"destination_dir must be absent or empty: {path}"
+        )
 
 
 def _scheduler_value(
@@ -830,7 +915,7 @@ def migrate_artifact_directory(
     destination_dir: Path | None = None,
     in_place: bool = False,
     dry_run: bool = False,
-    backup_suffix: str = ".pre-strict-v2.bak",
+    backup_suffix: str = DEFAULT_BACKUP_SUFFIX,
     report_path: Path | None = None,
 ) -> dict[str, Any]:
     selected_modes = sum((destination_dir is not None, in_place, dry_run))
@@ -849,14 +934,22 @@ def migrate_artifact_directory(
     )
     if destination_dir is not None and target_dir == resolved_source:
         raise ValueError("destination_dir must differ from source_dir")
+    if destination_dir is not None:
+        _require_empty_destination(target_dir)
 
+    source_artifact_hashes = _source_artifact_hashes(resolved_source)
     migrated = _build_migration(resolved_source, target_dir=target_dir)
+    _assert_source_unchanged(resolved_source, source_artifact_hashes)
     artifact_payloads = _target_payloads(
         migrated,
         source_dir=resolved_source,
         target_dir=target_dir,
         in_place=in_place,
     )
+    rematerialized_artifact_hashes = {
+        path.name: _sha256_bytes(payload)
+        for path, payload in artifact_payloads.items()
+    }
     predicted_backups = (
         [
             _backup_path(path, backup_suffix)
@@ -893,6 +986,8 @@ def migrate_artifact_directory(
             for stage, result in migrated.items()
         },
         "protected_fields_preserved": list(PROTECTED_FIELDS),
+        "source_artifact_sha256": source_artifact_hashes,
+        "rematerialized_artifact_sha256": rematerialized_artifact_hashes,
         "stages_migrated": list(migrated),
         "records": {
             stage: len(result.raw_rows)
@@ -925,6 +1020,9 @@ def migrate_artifact_directory(
     if resolved_report is not None:
         payloads_to_commit[resolved_report] = _json_payload(report)
     if payloads_to_commit:
+        _assert_source_unchanged(resolved_source, source_artifact_hashes)
+        if destination_dir is not None:
+            _require_empty_destination(target_dir)
         backups = _commit_transaction(
             payloads_to_commit,
             in_place=in_place,
@@ -955,7 +1053,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--in-place", action="store_true")
     parser.add_argument(
         "--backup-suffix",
-        default=".pre-strict-v2.bak",
+        default=DEFAULT_BACKUP_SUFFIX,
         help="Suffix for mandatory in-place backups.",
     )
     parser.add_argument("--report-path", type=Path)
