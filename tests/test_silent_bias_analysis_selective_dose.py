@@ -390,6 +390,45 @@ def test_clean_threshold_transfer_counts_confident_flips() -> None:
     assert bootstrap.n_test_clusters == 2
 
 
+def test_risk_inflation_interval_is_exact_shift_at_probability_boundary() -> None:
+    clean = [
+        _prediction(
+            f"clean-{index}",
+            0.9,
+            verdict="A",
+            human="A",
+            probabilities=(0.9, 0.05, 0.05),
+            question_id=f"clean-question-{index}",
+        )
+        for index in range(5)
+    ]
+    biased = [
+        _prediction(
+            f"biased-{index}",
+            0.99,
+            verdict="B",
+            human="A",
+            probabilities=(0.005, 0.99, 0.005),
+            flip=True,
+            question_id=f"biased-question-{index}",
+        )
+        for index in range(5)
+    ]
+
+    bootstrap = clean_calibrated_threshold_transfer_with_cluster_bootstrap(
+        clean,
+        biased,
+        target_risk=0.1,
+        n_resamples=100,
+        seed=42,
+    )
+
+    assert bootstrap.realized_risk_ci_low == 1.0
+    assert bootstrap.realized_risk_ci_high == 1.0
+    assert bootstrap.risk_inflation_vs_target_ci_low == 0.9
+    assert bootstrap.risk_inflation_vs_target_ci_high == 0.9
+
+
 def test_reused_bootstrap_threshold_rules_preserve_transfer_results() -> None:
     clean = [
         _prediction(

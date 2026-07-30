@@ -818,7 +818,14 @@ def clean_calibrated_threshold_transfer_with_cluster_bootstrap(
         return percentile(values, alpha / 2.0), percentile(values, 1.0 - alpha / 2.0)
 
     risk_low, risk_high = bounds("realized_risk")
-    target_low, target_high = bounds("risk_inflation_vs_target")
+    target_low, target_high = (
+        (None, None)
+        if risk_low is None or risk_high is None
+        else (
+            risk_low - target_risk,
+            risk_high - target_risk,
+        )
+    )
     clean_low, clean_high = bounds("risk_inflation_vs_clean_calibration")
     flips_low, flips_high = bounds("accepted_flip_fraction")
     return ThresholdTransferWithCI(

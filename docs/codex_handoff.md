@@ -445,3 +445,22 @@ were skipped in the local runtime. Changed Python files compiled,
 `git diff --check` passed, and an independent review found no blocking defect.
 Run the same focused suite with Matplotlib and statsmodels available before
 generating the corrected pilot package.
+
+## 2026-07-30 RQ2 Bootstrap-Boundary Correction
+
+The corrected four-model pilot reached the final analysis-package gate with
+25,344 paired rows and two byte-identical paper-asset packages. The gate
+caught one numerical-boundary mismatch: percentile interpolation between two
+identical upper-bound samples produced `0.9000000000000001` for a quantity
+whose mathematical maximum is `0.9`. Raw samples never exceeded the bound,
+and the affected point estimate was already marked unavailable because the
+transferred threshold accepted zero test examples.
+
+Analysis version `silent-bias-p4-v6` now constructs the
+risk-inflation-vs-target interval as the exact constant shift of the
+realized-risk interval. This is algebraically equivalent because target risk
+is fixed across bootstrap draws, preserves the validator's declared interval
+identity, and avoids interpolation overshoot at physical bounds. A regression
+fixture covers the exact 1.0-risk, 0.1-target boundary. Fifty-five targeted
+analysis, package-validation, and paper-asset tests passed under Python 3.12
+with the full analysis dependencies.

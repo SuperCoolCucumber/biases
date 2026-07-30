@@ -17,7 +17,7 @@ from biases.models import get_model_profile
 from biases.stats import mcnemar_exact
 
 
-ANALYSIS_VERSION = "silent-bias-p4-v5"
+ANALYSIS_VERSION = "silent-bias-p4-v6"
 HEADLINE_ROUTING_SPLIT = "test"
 ASSET_VERSION = "silent-bias-paper-assets-v3"
 MIXED_EFFECTS_FORMULA = (

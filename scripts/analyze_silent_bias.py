@@ -58,7 +58,7 @@ from biases.analysis.selective import (
 from biases.analysis.statistics import holm_adjust
 
 
-ANALYSIS_VERSION = "silent-bias-p4-v5"
+ANALYSIS_VERSION = "silent-bias-p4-v6"
 HEADLINE_ROUTING_SPLIT = "test"
 OUTPUT_NAMES = (
     "paired_shifts.csv",
