@@ -2,126 +2,136 @@
 
 ## Status
 
-**Retracted pending rerun.** A preflight audit on 2026-07-29 found that the
-processed MT-Bench conversation columns were serialized as Python literals,
-while the loader only parsed JSON. The fallback treated each serialized
-conversation as one text message. Consequently, the run did not reliably
-separate the shared prompt from the candidate models' final assistant answers.
-The numerical RQ1–RQ3 results from this pilot must not be used as scientific
-evidence.
+The corrected four-model, 198-pair pilot is complete and suitable for deciding
+whether to proceed to the full run. It is not a substitute for the preregistered
+full-data results.
 
-The run remains useful only as an engineering validation of the two-stage grid:
+The post-analysis package gate passed with zero integrity errors. It verified
+25,344 clean–cue pairs, all direct-input and output hashes, the complete
+model-by-family-by-dose grids, and two byte-identical regenerations of the
+paper assets. The package reports `primary_available=false` because 50
+predeclared availability warnings remain in the small-sample RQ2 threshold
+analysis; these are scientific non-estimability warnings, not integrity
+failures.
 
-- 198 source answer pairs from 75 question clusters;
-- 396 clean ordered judgments;
-- 6,336 clean–cue paired comparisons;
-- 20/20 parseable verdict-extraction smoke examples;
-- no unmatched cued records, unused clean records, clean ties, or planning
-  errors.
+## Design and validation
 
-Consistency sampling used the sanctioned reduced schedule: `k=4` at clean and
-boundary doses, with logit and verbalized-confidence passes at every dose.
-The parser has been corrected with safe, backward-compatible literal parsing
-and explicit MT-Bench turn selection. The regenerated 198-pair input has
-SHA-256
-`d0e2dd12c5c6a2b378b12ab0ab363850147f1fa501fd13d25860737fc80d6b7a`.
-All four required model smokes have now been rerun under `strict_v3`. The
-pilot and its analyses still must be rerun before the full-data campaign
-begins.
+The pilot contains:
 
-A second inference audit also found that vLLM 0.19.1 defaults to returning
-full-vocabulary `raw_logprobs` before applying `allowed_token_ids`. The first
-correctly parsed replacement Qwen3-4B pilot therefore did not necessarily
-contain all registered A/B/T token logits. Its three-label probabilities
-cannot be reconstructed from the stored normalized values, so that run is also
-retained only as an engineering audit artifact. Replacement inference requires
-`processed_logprobs`, exact registered-token filtering, and complete
-allowed-token coverage before any pilot result is reported. The audit observed
-incomplete positive label support in 48/396 clean rows and 1,321/6,336 cued
-rows, confirming that the stored normalized values are not a complete
-three-label logit pass.
+- Qwen3-4B, Qwen3-14B, OLMo3-7B-Instruct, and
+  Hermes-3-Llama-3.1-8B;
+- 198 MT-Bench answer pairs per model from 75 question clusters;
+- both AB and BA orderings: 396 clean judgments and 6,336 cued judgments per
+  model;
+- authority and bandwagon cues in congruent and incongruent directions across
+  four doses; and
+- logit and verbalized-confidence passes at every dose, with the sanctioned
+  reduced consistency schedule (`k=4` at clean and boundary doses).
 
-A third pre-pilot audit found a mismatch inside the constrained-token
-contract. The earlier registry allowed both literal and leading-space
-single-token surfaces for each verdict. A model could emit one constrained
-token while the probability path summed multiple surfaces by label, making
-the emitted verdict and aggregated MAP diverge. The first OLMo3 smoke
-encountered this condition and aborted before writing result records. This
-fail-closed behavior is retained; no partial smoke result is treated as
-evidence.
+Every model passed the fixed 20-example verdict gate under the `strict_v3`
+processed-logprob contract. Cross-model artifact validation found the exact
+expected Stage A and Stage B counts, no pairing errors, and at least 99%
+verbalized-confidence availability for every model and stage.
 
-## Invalidated Preliminary Findings
+Seventy-eight of 1,584 clean ordered judgments are flagged `clean_tie=true`
+(Hermes 48, Qwen3-14B 4, Qwen3-4B 13, and OLMo3 13). They remain in the
+paired artifacts and are reported separately; all primary RQ1–RQ3 estimates
+use `clean_tie=false`.
 
-No RQ1, RQ2, or RQ3 numerical claim from the affected pilot is retained. The
-previous values remain available in the immutable artifact files and Git
-history solely for debugging and auditability.
+RQ1 and RQ3 use only the inherited `routing_split=test` rows. RQ2 selects
+thresholds on the inherited calibration rows and evaluates them on test rows.
+Confidence intervals, including the primary question-clustered Gaussian GEE
+trends, use 2,000 question-cluster bootstrap resamples. Secondary permutation
+trend tests use 10,000 permutations. All stochastic analysis uses seed 42.
 
-## Interpretation and Limitations
+## Preliminary findings
 
-- The affected run used malformed conversation interpretation and is invalid
-  for behavioral conclusions.
-- The required replacement matrix contains four independently gated judges:
-  Qwen3-4B, Qwen3-14B, OLMo3-7B-Instruct, and Hermes3-Llama3.1-8B. Skywork
-  remains optional. These runs remain a stratified pilot rather than full
-  MT-Bench.
-- The prescribed row-level routing split places 41 of 75 question clusters
-  across both calibration and test, weakening an independent-transfer
-  interpretation without changing the preregistered split.
-- In the full 3,355-row source file, all 80 question IDs occur in both routing
-  splits. The primary analysis preserves that user-mandated split; a
-  question-disjoint robustness analysis is required before interpreting RQ2
-  as transfer to wholly unseen questions.
-- Authority's empirical dose profile is non-monotone despite a positive fitted
-  slope; that slope should not be described as monotone behavioral evidence.
-- Near-separation warnings occur in exploratory mixed-effects models.
-- Full runs must validate verdict extraction independently for every additional
-  model before any result is pooled or compared.
-- Mistral-7B remains excluded until the runner can transport and hash its
-  canonical chat-template token IDs; its tokenizer explicitly warns that the
-  current string render-and-reencode path is unsafe.
-- OLMo2-7B passed constrained `processed_logprobs` extraction on 20/20 smoke
-  examples, but failed the independently preregistered native verdict contract:
-  18/20 examples both started with a declared verdict token and agreed with the
-  constrained verdict, below the 99% gate. The failed smoke is retained as an
-  exclusion artifact.
-- Phi-4-14B also passed constrained extraction on 20/20 examples but failed
-  the native contract and agreement gate on 14 examples: only 6/20 passed.
-  Its failed smoke is retained as an exclusion artifact without weakening the
-  99% requirement.
-- OLMo3-7B-Instruct is the public third-family replacement, pinned to revision
-  `6e5971d9eba42665f5bd5a0fcf047f299ce1dccc`. Its tokenizer-only full-grid
-  preflight passed 113,458 prompts, with a maximum of 3,450 prompt tokens plus
-  24 generation tokens, zero string-transport mismatches, and zero context
-  overflows. Its first GPU smoke aborted under the multi-surface mismatch
-  described above and produced no accepted records.
-- The current parser and inference contract is `strict_v3`. All four required
-  models use exactly the literal `A`, `B`, and `T` tokens. Each model passed
-  20/20 constrained examples with valid probabilities and MAP alignment, and
-  20/20 native examples passed the first-token-and-verdict-agreement contract.
-  The native threshold remains 99%. Each `ExperimentSpec` binds the exact
-  token texts and resolved token IDs. The full evidence paths and SHA-256
-  values are recorded in `docs/codex_handoff.md`.
-- Passing the four smoke gates establishes only that the judge interfaces meet
-  the preregistered extraction contract. The corrected 198-pair pilot,
-  cross-model artifact validation, RQ1–RQ3 analyses, and all numerical findings
-  remain pending.
+### RQ1 — Silent bias is consistently visible without verdict flips
 
-## Reproducibility
+All 32 model-by-family-by-dose primary cells support positive movement of
+probability mass toward an incongruent cue among examples whose verdict did
+not flip. Mean shifts range from 0.0197 to 0.1131. This is strong pilot evidence
+for the existence of silent bias across all four judges and both social-cue
+families.
 
-The command sequence is documented in `README.md`; decision rules are frozen in
-`docs/experiment_plan.md`. Generated data and results remain below
-`$BIASES_ARTIFACT_ROOT` and are not committed.
+The stronger susceptibility claim is less universal. A low-dose shift beats
+clean uncertainty alone for predicting a highest-dose flip in 3 of 8
+model-by-family comparisons:
 
-Invalidated-run provenance (retained for audit only):
+- Qwen3-14B bandwagon: ΔAUROC 0.192, 95% CI [0.139, 0.248];
+- Qwen3-4B authority: ΔAUROC 0.226, 95% CI [0.144, 0.311]; and
+- Qwen3-4B bandwagon: ΔAUROC 0.291, 95% CI [0.197, 0.393].
 
-- processed dataset SHA-256:
-  `5983747255fdd73b4dd2375b80822629240e34778e5372d2cdfc4ec9278c0325`;
-- Stage A score SHA-256:
-  `27f35e5255dd4ca7dc77e5beb3d0240ff353acf3744cf16769209af164bd1418`;
-- Stage B score SHA-256:
-  `582f6e6ee0a9f5947b6a19fe0ac1f20444ade52981b72fb901eb84bd390b72fa`;
-- analysis specification hash:
-  `785e6d18b8d202d531acf5a1906fbfce3402c355e530e40aa86bea42c4aa7df5`.
+The other five comparisons are inconclusive. The full run is therefore needed
+before claiming that paired shift is a generally superior susceptibility
+detector rather than a model- and family-dependent one.
 
-The replacement report will record new dataset, Stage A, Stage B, analysis, and
-code hashes after the corrected pilot passes end to end.
+### RQ2 — The pilot is too small to stress-test selective risk reliably
+
+At the preregistered 10% target risk, 11 of 16 primary high-dose,
+single-ordering cells accept no test examples. Of the five cells with finite
+risk, three meet the declared “clean guarantee survives” decision rule and two
+are inconclusive; none shows statistically supported risk inflation. Test
+coverage is only 0–2.02%, and the largest point estimate of the accepted
+fraction of incongruent flips is zero.
+
+This is not evidence that abstention is robust. It shows that the clean
+threshold is usually too selective for a 198-pair pilot to estimate the
+headline failure mode. The full dataset is required for a meaningful RQ2
+result.
+
+### RQ3 — Fitted flip probability rises with dose; early warning is limited
+
+All eight model-by-family fitted logistic dose slopes are positive with
+confidence intervals above zero. These are positive average associations, not
+evidence that every empirical dose profile is monotone; authority profiles are
+non-monotone for several models. The estimated 25%-flip thresholds lie below
+the lowest tested doses, so those threshold values are extrapolations and
+should not be interpreted as precisely located sensitivity points.
+
+Only Hermes bandwagon supports a positive pre-first-flip entropy trend:
+slope 0.0450, 95% CI [0.0171, 0.0712], Holm-adjusted p=0.00535. Early warning
+is not broadly established in this pilot: six of the other comparisons are
+inconclusive, and the Qwen3-4B authority trend runs downward under the
+preregistered one-sided increase test. The full run is needed to distinguish
+weak early-warning effects from confidence-preserving flips.
+
+## Limitations
+
+- This is a stratified pilot, not the 3,337-pair full run.
+- The inherited row-level split places 41 of 75 pilot question clusters in
+  both calibration and test. The preregistered split remains primary, but the
+  full analysis should include the planned question-disjoint robustness check.
+- RQ2 has extensive zero-coverage cells and must not be summarized as a
+  negative result.
+- The reduced consistency schedule supports engineering validation and the
+  sanctioned budget plan; logit uncertainty remains the only channel measured
+  at every dose.
+- The run emitted two statsmodels covariance-square-root runtime warnings.
+  Primary claims rely on the declared clustered intervals and adjusted tests;
+  all 32 exploratory modeling rows completed with status `ok`.
+
+## Reproducibility and provenance
+
+The corrected package was generated at code commit
+`1c1cab95c6936990797382387a68f76b950cc88b` with:
+
+- pilot dataset SHA-256
+  `d0e2dd12c5c6a2b378b12ab0ab363850147f1fa501fd13d25860737fc80d6b7a`;
+- analysis version `silent-bias-p4-v6`;
+- analysis specification SHA-256
+  `fa600629136c0be66f9771df5c2b9366e2fb5b7b2d5bf5b77fdff8ffa40f4dda`;
+- analysis-manifest SHA-256
+  `bb4ae745514e61578f87264469b8a4284b3e2773956f3671989ff0705ad9240c`;
+- generated digest SHA-256
+  `734c443709317fcf79ae48245ac77812bfd5c9861b15e4e32ea03634ca67a29e`;
+  and
+- package-validation SHA-256
+  `acda8d84030dba6bfdc79ab42dc2b6205505ef1c274b9a0d2e5e03d9cd46794f`.
+
+Generated CSVs, figures, tables, and the claims-to-evidence digest are stored
+outside Git under
+`$BIASES_ARTIFACT_ROOT/outputs/analysis/corrected_pilot_1c1cab9/`.
+The authoritative narrative is `paper_results.md`; its cells link to hashed
+source CSVs. The full campaign should use the same validation and deterministic
+asset-regeneration gates before any paper claim is promoted.

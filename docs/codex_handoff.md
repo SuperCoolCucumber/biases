@@ -464,3 +464,38 @@ identity, and avoids interpolation overshoot at physical bounds. A regression
 fixture covers the exact 1.0-risk, 0.1-target boundary. Fifty-five targeted
 analysis, package-validation, and paper-asset tests passed under Python 3.12
 with the full analysis dependencies.
+
+## 2026-07-30 Corrected Four-Model Pilot Completion
+
+The corrected 198-pair pilot is complete for Qwen3-4B, Qwen3-14B,
+OLMo3-7B-Instruct, and Hermes-3-Llama-3.1-8B. Each model has 396 clean and
+6,336 cued records, for 25,344 clean–cue pairs across 75 question clusters.
+Per-model and cross-model artifact gates passed with exact expected counts,
+no pairing errors, and at least 99% verbalized-confidence availability.
+Seventy-eight of 1,584 clean ordered judgments are flagged as ties; they remain
+in the paired artifacts, while all primary estimates use `clean_tie=false`.
+
+Analysis version `silent-bias-p4-v6` used only test rows for RQ1/RQ3, 2,000
+question-cluster bootstrap resamples, 10,000 trend permutations, and seed 42.
+Its separate package validator passed with zero integrity errors and verified
+two byte-identical paper-asset regenerations. The validator intentionally
+reports `primary_available=false`: 50 declared RQ2 availability warnings arise
+from zero-coverage or otherwise non-estimable pilot threshold cells.
+
+Preliminary results are summarized in
+`reports/preliminary_silent_bias_pilot.md`. In brief, all 32 primary RQ1 cells
+show positive non-flip cue-mass movement; the paired shift beats clean
+uncertainty in 3 of 8 susceptibility comparisons; all eight fitted RQ3 dose
+slopes are positive without implying empirically monotone ladders; and only
+Hermes bandwagon supports a positive pre-flip entropy trend. RQ2 is not
+resolved: 11 of 16 primary high-dose single-ordering cells have zero test
+coverage, and none shows significant risk inflation.
+
+The generated package remains outside Git at
+`$BIASES_ARTIFACT_ROOT/outputs/analysis/corrected_pilot_1c1cab9/`. The
+analysis-spec hash is
+`fa600629136c0be66f9771df5c2b9366e2fb5b7b2d5bf5b77fdff8ffa40f4dda`;
+the analysis-manifest hash is
+`bb4ae745514e61578f87264469b8a4284b3e2773956f3671989ff0705ad9240c`;
+and the package-validation hash is
+`acda8d84030dba6bfdc79ab42dc2b6205505ef1c274b9a0d2e5e03d9cd46794f`.
