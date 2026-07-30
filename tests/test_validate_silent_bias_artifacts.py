@@ -10,7 +10,11 @@ from types import ModuleType
 import pytest
 
 from biases.models import get_model_profile
-from biases.position_bias import CONSTRAINED_LOGPROBS_MODE
+from biases.position_bias import (
+    CONSTRAINED_LOGPROBS_MODE,
+    JUDGE_OUTPUT_PARSER_VERSION,
+    VERBALIZED_OUTPUT_PARSER_VERSION,
+)
 from biases.schemas import VerdictLabel
 from biases.silent_bias_runner import (
     run_silent_bias_clean,
@@ -200,6 +204,7 @@ def _degrade_parser_artifacts(output_dir: Path) -> None:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         for row in raw_rows:
             row["metadata"]["judge_output_parser_version"] = "legacy_v1"
+            row["metadata"]["verbalized_output_parser_version"] = "legacy_v1"
             row["metadata"].pop("max_num_batched_tokens", None)
             row["metadata"].pop("max_num_seqs", None)
             row["uncertainty"]["logit"]["entropy"] = 999.0
@@ -208,6 +213,7 @@ def _degrade_parser_artifacts(output_dir: Path) -> None:
                 row["uncertainty"]["consistency"]["agreement_rate"] = 0.01
         for row in score_rows:
             row["judge_output_parser_version"] = "legacy_v1"
+            row["verbalized_output_parser_version"] = "legacy_v1"
             row.pop("max_num_batched_tokens", None)
             row.pop("max_num_seqs", None)
             row["entropy"] = 999.0
@@ -216,9 +222,11 @@ def _degrade_parser_artifacts(output_dir: Path) -> None:
                 row["consistency_agreement_rate"] = 0.01
         for row in pair_rows:
             row["judge_output_parser_version"] = "legacy_v1"
+            row["verbalized_output_parser_version"] = "legacy_v1"
             row.pop("max_num_batched_tokens", None)
             row.pop("max_num_seqs", None)
         summary["judge_output_parser_version"] = "legacy_v1"
+        summary["verbalized_output_parser_version"] = "legacy_v1"
         summary.pop("max_num_batched_tokens", None)
         summary.pop("max_num_seqs", None)
         _write_jsonl(raw_path, raw_rows)
@@ -595,9 +603,15 @@ def test_validator_recomputes_parser_derived_fields_and_versions(
     stale_pair_rows = _read_jsonl(stale_pair_path)
     stale_summary = json.loads(stale_summary_path.read_text(encoding="utf-8"))
     stale_raw_rows[0]["metadata"]["judge_output_parser_version"] = "legacy_v1"
+    stale_raw_rows[0]["metadata"]["verbalized_output_parser_version"] = (
+        "legacy_v1"
+    )
     stale_score_rows[0]["judge_output_parser_version"] = "legacy_v1"
+    stale_score_rows[0]["verbalized_output_parser_version"] = "legacy_v1"
     stale_pair_rows[0]["judge_output_parser_version"] = "legacy_v1"
+    stale_pair_rows[0]["verbalized_output_parser_version"] = "legacy_v1"
     stale_summary["judge_output_parser_version"] = "legacy_v1"
+    stale_summary["verbalized_output_parser_version"] = "legacy_v1"
     _write_jsonl(stale_raw_path, stale_raw_rows)
     _write_jsonl(stale_score_path, stale_score_rows)
     _write_jsonl(stale_pair_path, stale_pair_rows)
@@ -608,6 +622,12 @@ def test_validator_recomputes_parser_derived_fields_and_versions(
     stale_report = _validate(csv_path, stale_dir)
     assert stale_report["passed"] is False
     assert stale_report["error_counts_by_code"]["stale_parser_version"] >= 4
+    assert (
+        stale_report["error_counts_by_code"][
+            "stale_verbalized_parser_version"
+        ]
+        >= 4
+    )
 
 
 def test_parser_migration_rebuilds_destination_and_preserves_links(
@@ -649,7 +669,13 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
     )
     assert (
         destination_rows[0]["metadata"]["judge_output_parser_version"]
+        == JUDGE_OUTPUT_PARSER_VERSION
         == "strict_v3"
+    )
+    assert (
+        destination_rows[0]["metadata"]["verbalized_output_parser_version"]
+        == VERBALIZED_OUTPUT_PARSER_VERSION
+        == "strict_v2"
     )
     assert destination_rows[0]["metadata"]["max_num_batched_tokens"] is None
     assert destination_rows[0]["metadata"]["max_num_seqs"] is None
@@ -664,7 +690,14 @@ def test_parser_migration_rebuilds_destination_and_preserves_links(
                 destination_dir / f"silent_bias_{stage}_summary.json"
             ).read_text(encoding="utf-8")
         )
-        assert summary["judge_output_parser_version"] == "strict_v3"
+        assert (
+            summary["judge_output_parser_version"]
+            == JUDGE_OUTPUT_PARSER_VERSION
+        )
+        assert (
+            summary["verbalized_output_parser_version"]
+            == VERBALIZED_OUTPUT_PARSER_VERSION
+        )
         assert summary["logprobs_mode"] == CONSTRAINED_LOGPROBS_MODE
         assert summary["max_num_batched_tokens"] is None
         assert summary["max_num_seqs"] is None

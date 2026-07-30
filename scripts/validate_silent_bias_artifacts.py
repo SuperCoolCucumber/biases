@@ -17,6 +17,7 @@ from biases.parser_integrity import ParserIntegrityError, derive_parser_fields
 from biases.position_bias import (
     CONSTRAINED_LOGPROBS_MODE,
     JUDGE_OUTPUT_PARSER_VERSION,
+    VERBALIZED_OUTPUT_PARSER_VERSION,
     load_position_pairs,
     verbalized_parse_status,
 )
@@ -571,6 +572,19 @@ def _validate_parser_derived_fields(
             stage=stage,
             record_id=record_id,
         )
+    if (
+        metadata.get("verbalized_output_parser_version")
+        != VERBALIZED_OUTPUT_PARSER_VERSION
+    ):
+        collector.add(
+            "stale_verbalized_parser_version",
+            f"raw verbalized parser version is "
+            f"{metadata.get('verbalized_output_parser_version')!r}; expected "
+            f"{VERBALIZED_OUTPUT_PARSER_VERSION!r}",
+            artifact_dir=artifact_dir,
+            stage=stage,
+            record_id=record_id,
+        )
     methods = spec.get("uncertainty_methods")
     expected_parse_status = verbalized_parse_status(
         uncertainty_methods=methods if isinstance(methods, list) else [],
@@ -578,8 +592,8 @@ def _validate_parser_derived_fields(
     )
     actual_parse_status = metadata.get("verbalized_parse_status")
     if (
-        metadata.get("judge_output_parser_version")
-        == JUDGE_OUTPUT_PARSER_VERSION
+        metadata.get("verbalized_output_parser_version")
+        == VERBALIZED_OUTPUT_PARSER_VERSION
         and actual_parse_status != expected_parse_status
     ):
         collector.add(
@@ -724,6 +738,9 @@ def _expected_flat_projection(record: Mapping[str, Any]) -> dict[str, Any]:
         "judge_output_parser_version": metadata.get(
             "judge_output_parser_version"
         ),
+        "verbalized_output_parser_version": metadata.get(
+            "verbalized_output_parser_version"
+        ),
         "logprobs_mode": spec.get("logprobs_mode"),
         "max_num_batched_tokens": metadata.get("max_num_batched_tokens"),
         "max_num_seqs": metadata.get("max_num_seqs"),
@@ -787,6 +804,19 @@ def _validate_flat_scores(
                 f"flat parser version is "
                 f"{score.get('judge_output_parser_version')!r}; expected "
                 f"{JUDGE_OUTPUT_PARSER_VERSION!r}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+                record_id=record_id,
+            )
+        if (
+            score.get("verbalized_output_parser_version")
+            != VERBALIZED_OUTPUT_PARSER_VERSION
+        ):
+            collector.add(
+                "stale_verbalized_parser_version",
+                f"flat verbalized parser version is "
+                f"{score.get('verbalized_output_parser_version')!r}; expected "
+                f"{VERBALIZED_OUTPUT_PARSER_VERSION!r}",
                 artifact_dir=artifact_dir,
                 stage=stage,
                 record_id=record_id,
@@ -862,6 +892,19 @@ def _validate_pair_summaries(
                 stage=stage,
                 record_id=record_id,
             )
+        if (
+            pair_row.get("verbalized_output_parser_version")
+            != VERBALIZED_OUTPUT_PARSER_VERSION
+        ):
+            collector.add(
+                "stale_verbalized_parser_version",
+                f"pair-summary verbalized parser version is "
+                f"{pair_row.get('verbalized_output_parser_version')!r}; "
+                f"expected {VERBALIZED_OUTPUT_PARSER_VERSION!r}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+                record_id=record_id,
+            )
         try:
             record = RunRecord.model_validate(raw_by_id[record_id])
         except ValidationError:
@@ -897,6 +940,18 @@ def _validate_stage_summary(
             f"stage-summary parser version is "
             f"{summary.get('judge_output_parser_version')!r}; expected "
             f"{JUDGE_OUTPUT_PARSER_VERSION!r}",
+            artifact_dir=artifact_dir,
+            stage=stage,
+        )
+    if (
+        summary.get("verbalized_output_parser_version")
+        != VERBALIZED_OUTPUT_PARSER_VERSION
+    ):
+        collector.add(
+            "stale_verbalized_parser_version",
+            f"stage-summary verbalized parser version is "
+            f"{summary.get('verbalized_output_parser_version')!r}; expected "
+            f"{VERBALIZED_OUTPUT_PARSER_VERSION!r}",
             artifact_dir=artifact_dir,
             stage=stage,
         )
@@ -2231,6 +2286,9 @@ def validate_artifact_directories(
             "sampling_temperature": sampling_temperature,
             "dataset_split": dataset_split,
             "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+            "verbalized_output_parser_version": (
+                VERBALIZED_OUTPUT_PARSER_VERSION
+            ),
             "min_verbalized_availability": min_verbalized_availability,
         },
         "artifacts": [result.report for result in results],

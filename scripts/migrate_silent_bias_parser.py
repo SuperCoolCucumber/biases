@@ -17,6 +17,7 @@ from biases.parser_integrity import (
 from biases.position_bias import (
     CONSTRAINED_LOGPROBS_MODE,
     JUDGE_OUTPUT_PARSER_VERSION,
+    VERBALIZED_OUTPUT_PARSER_VERSION,
     _record_to_uncertainty_row,
 )
 from biases.schemas import RunRecord
@@ -411,6 +412,9 @@ def _migrated_summary(
         else _inferred_summary(raw_rows, stage=stage)
     )
     migrated["judge_output_parser_version"] = JUDGE_OUTPUT_PARSER_VERSION
+    migrated["verbalized_output_parser_version"] = (
+        VERBALIZED_OUTPUT_PARSER_VERSION
+    )
     migrated["records_written"] = record_count
     migrated["logprobs_mode"] = logprobs_mode
     migrated["max_num_batched_tokens"] = max_num_batched_tokens
@@ -881,6 +885,9 @@ def migrate_artifact_directory(
         "source_dir": str(resolved_source),
         "target_dir": None if dry_run else str(target_dir),
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "verbalized_output_parser_version": (
+            VERBALIZED_OUTPUT_PARSER_VERSION
+        ),
         "logprobs_mode": {
             stage: result.summary["logprobs_mode"]
             for stage, result in migrated.items()
@@ -971,6 +978,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "passed": False,
             "error": str(exc),
             "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+            "verbalized_output_parser_version": (
+                VERBALIZED_OUTPUT_PARSER_VERSION
+            ),
         }
     print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=True))
     return 0 if report["passed"] else 1

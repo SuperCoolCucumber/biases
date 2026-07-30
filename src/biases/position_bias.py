@@ -44,6 +44,7 @@ DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-14B-Instruct"
 DEFAULT_DATA_PATH = data_path("processed", "mtbench_full.csv")
 DEFAULT_MAX_MODEL_LEN = 8192
 JUDGE_OUTPUT_PARSER_VERSION = "strict_v3"
+VERBALIZED_OUTPUT_PARSER_VERSION = "strict_v2"
 CONSTRAINED_LOGPROBS_MODE = "processed_logprobs"
 VerbalizedParseStatus = Literal[
     "parsed",
@@ -634,10 +635,53 @@ def _has_trailing_verdict_or_confidence(lines: list[str]) -> bool:
     return False
 
 
+_HERMES_VERBALIZED_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"Line 1: (?P<verdict>[ABT])\n"
+        r"Line 2: (?:Confidence: )?"
+        r"(?P<confidence>\d+(?:\.\d+)?)"
+    ),
+    re.compile(
+        r"1\. (?P<verdict>[ABT])\n"
+        r"2\. (?P<confidence>\d+(?:\.\d+)?)"
+    ),
+    re.compile(
+        r"(?P<verdict>[ABT]), "
+        r"(?P<confidence>\d+(?:\.\d+)?)"
+    ),
+)
+
+
+def _parse_hermes_verbalized_output(
+    text: str,
+) -> tuple[VerdictLabel, float] | None:
+    """Parse only the complete, observed Hermes verdict-confidence forms."""
+
+    candidate = text.strip().replace("\r\n", "\n")
+    for pattern in _HERMES_VERBALIZED_PATTERNS:
+        match = pattern.fullmatch(candidate)
+        if match is None:
+            continue
+        confidence = float(match.group("confidence"))
+        if not 0.0 <= confidence <= 100.0:
+            return None
+        verdict = {
+            "A": VerdictLabel.A,
+            "B": VerdictLabel.B,
+            "T": VerdictLabel.TIE,
+        }[match.group("verdict")]
+        return verdict, confidence
+    return None
+
+
 def parse_verbalized_output(
     text: str,
 ) -> tuple[VerdictLabel | None, float | None]:
     """Parse one atomic verdict-confidence pair from strict output forms."""
+
+    hermes_result = _parse_hermes_verbalized_output(text)
+    if hermes_result is not None:
+        return hermes_result
 
     nonempty_lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not nonempty_lines:
@@ -1167,6 +1211,9 @@ def _build_run_record(
             "decision_token_index": 0,
             "decision_token_labels": ["A", "B", "T"],
             "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+            "verbalized_output_parser_version": (
+                VERBALIZED_OUTPUT_PARSER_VERSION
+            ),
             "verbalized_parse_status": verbalized_parse_status(
                 uncertainty_methods=spec.uncertainty_methods,
                 raw_output=verbalized_raw_output,
@@ -1303,6 +1350,9 @@ def _record_to_uncertainty_row(record: RunRecord) -> dict[str, Any]:
         "decision_token_labels": record.metadata.get("decision_token_labels"),
         "judge_output_parser_version": record.metadata.get(
             "judge_output_parser_version"
+        ),
+        "verbalized_output_parser_version": record.metadata.get(
+            "verbalized_output_parser_version"
         ),
         "verbalized_parse_status": record.metadata.get(
             "verbalized_parse_status"

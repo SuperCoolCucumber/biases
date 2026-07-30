@@ -535,6 +535,52 @@ def test_joint_verbalized_parser_accepts_only_atomic_pairs(
 
 
 @pytest.mark.parametrize(
+    ("text", "expected_verdict", "expected_confidence"),
+    (
+        ("Line 1: A\nLine 2: 0", VerdictLabel.A, 0.0),
+        (
+            "Line 1: B\nLine 2: Confidence: 72.5",
+            VerdictLabel.B,
+            72.5,
+        ),
+        ("1. T\n2. 100", VerdictLabel.TIE, 100.0),
+        ("A, 99", VerdictLabel.A, 99.0),
+        ("B, 99.5", VerdictLabel.B, 99.5),
+    ),
+)
+def test_joint_verbalized_parser_accepts_exact_hermes_forms(
+    text: str,
+    expected_verdict: VerdictLabel,
+    expected_confidence: float,
+) -> None:
+    assert parse_verbalized_output(text) == (
+        expected_verdict,
+        expected_confidence,
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "1\n100",
+        "Line 1: A\nLine 2:",
+        "1. B\n2.",
+        "T,",
+        "Line 1: A\nLine 2: 80\nExplanation follows.",
+        "1. B\n2. 75\nExplanation follows.",
+        "T, 60 because the answers are similar",
+        "Line 1: A\nLine 2: 100.1",
+        "1. B\n2. -1",
+        "T, 90%",
+    ),
+)
+def test_joint_verbalized_parser_rejects_non_atomic_hermes_forms(
+    text: str,
+) -> None:
+    assert parse_verbalized_output(text) == (None, None)
+
+
+@pytest.mark.parametrize(
     "text",
     (
         "Confidence: 95",

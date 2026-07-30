@@ -12,6 +12,7 @@ from biases.models import get_model_profile
 from biases.position_bias import (
     CONSTRAINED_LOGPROBS_MODE,
     JUDGE_OUTPUT_PARSER_VERSION,
+    VERBALIZED_OUTPUT_PARSER_VERSION,
 )
 from biases.silent_bias_runner import (
     consistency_runs_for_condition,
@@ -237,6 +238,12 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
         tuned_summary["judge_output_parser_version"]
         == JUDGE_OUTPUT_PARSER_VERSION
     )
+    assert JUDGE_OUTPUT_PARSER_VERSION == "strict_v3"
+    assert (
+        tuned_summary["verbalized_output_parser_version"]
+        == VERBALIZED_OUTPUT_PARSER_VERSION
+        == "strict_v2"
+    )
     assert tuned_summary["logprobs_mode"] == CONSTRAINED_LOGPROBS_MODE
     assert tuned_summary["verbalized_parse_status_counts"] == {
         "not_requested": 4
@@ -271,6 +278,16 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
     assert {
         row["metadata"]["verbalized_parse_status"] for row in tuned_rows
     } == {"not_requested"}
+    assert {
+        row["metadata"]["verbalized_output_parser_version"]
+        for row in tuned_rows
+    } == {VERBALIZED_OUTPUT_PARSER_VERSION}
+    assert {
+        row["verbalized_output_parser_version"] for row in tuned_flat_rows
+    } == {VERBALIZED_OUTPUT_PARSER_VERSION}
+    assert {
+        row["verbalized_output_parser_version"] for row in tuned_pair_rows
+    } == {VERBALIZED_OUTPUT_PARSER_VERSION}
     assert {
         (
             row["spec"]["logprobs_mode"],
@@ -708,6 +725,7 @@ def test_resume_rejects_stale_prompt_and_extraction_provenance(
     rows[0]["spec_hash"] = "stale"
     rows[0]["metadata"]["conversation_extraction_mode"] = "stale"
     rows[0]["metadata"]["judge_output_parser_version"] = "stale"
+    rows[0]["metadata"]["verbalized_output_parser_version"] = "stale"
     raw_path.write_text(
         "".join(f"{json.dumps(row)}\n" for row in rows),
         encoding="utf-8",
@@ -718,6 +736,7 @@ def test_resume_rejects_stale_prompt_and_extraction_provenance(
         match=(
             "prompt_hash.*spec_hash.*conversation_extraction_mode"
             ".*judge_output_parser_version"
+            ".*verbalized_output_parser_version"
         ),
     ):
         run_silent_bias_clean(
@@ -829,6 +848,44 @@ def test_stage_b_rejects_stage_a_summary_from_an_old_output_parser(
             model_name="qwen3-4b",
             consistency_runs=0,
             include_verbalized_confidence=False,
+            judge=_FakeJudge(),
+        )
+
+
+def test_stage_b_rejects_stage_a_summary_from_an_old_verbalized_parser(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    summary = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=True,
+        judge=_FakeJudge(),
+    )
+    pair_summary_path = Path(summary["pair_summary_path"])
+    rows = _read_jsonl(pair_summary_path)
+    for row in rows:
+        row.pop("verbalized_output_parser_version")
+    pair_summary_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="verbalized_output_parser_version",
+    ):
+        run_silent_bias_cued(
+            csv_path=csv_path,
+            stage_a_summary_path=pair_summary_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=True,
             judge=_FakeJudge(),
         )
 

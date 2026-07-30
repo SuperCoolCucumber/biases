@@ -360,6 +360,34 @@ The smoke gate is complete without changing the preregistered 99% threshold.
 This does not validate the 198-pair pilot or any RQ result: pilot inference,
 cross-model artifact validation, analysis, and paper assets remain pending.
 
+## 2026-07-30 Verbalized-Output Contract Correction (`strict_v2`)
+
+The corrected Hermes pilot passed its constrained verdict/logit and scheduled
+consistency requirements, but the clean stage stopped at the independent
+verbalized-confidence gate: 364 of 396 responses parsed (91.92%), below the
+fixed 99% minimum. The failure was retained as a Stage-A-only audit snapshot;
+no cued Hermes records or validator artifact were produced.
+
+Inspection of the preserved raw verbalized text found that 29 of the 32
+rejections were complete, unambiguous verdict–score pairs in three exact
+formats: labeled `Line 1`/`Line 2` output, enumerated `1.`/`2.` output, or a
+single `A|B|T, score` line. Three outputs remain unavailable: one uses an
+answer number rather than an `A`/`B`/`T` verdict, one omits the confidence
+score, and one appends explanatory prose after a comma-form pair. The new
+separately versioned
+`verbalized_output_parser_version=strict_v2` accepts only full-response
+matches for those atomic forms, keeps the ambiguous outputs unavailable, and
+raises clean Hermes availability to 393/396 (99.24%). The constrained verdict
+contract remains `strict_v3`.
+
+Raw records, flat uncertainty rows, pair summaries, and stage summaries now
+carry the separate verbalized parser version. Resume and artifact validation
+fail closed on stale or missing values. Use
+`scripts/migrate_silent_bias_parser.py` to rematerialize the already preserved
+Qwen, OLMo, and Hermes raw records before resuming the pilot; the migration
+must retain raw outputs and all protected IDs, hashes, and pairing links.
+Rerun per-model and cross-model validation after Hermes Stage B completes.
+
 ## 2026-07-30 Analysis-Package Semantic Gate
 
 `scripts/validate_silent_bias_analysis.py` is a post-analysis package gate.

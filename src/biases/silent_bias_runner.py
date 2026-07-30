@@ -14,6 +14,7 @@ from biases.position_bias import (
     CONSTRAINED_LOGPROBS_MODE,
     DEFAULT_MAX_MODEL_LEN,
     JUDGE_OUTPUT_PARSER_VERSION,
+    VERBALIZED_OUTPUT_PARSER_VERSION,
     VLLMJudge,
     _build_run_record,
     _compute_consistency,
@@ -364,6 +365,10 @@ def _validate_resume_rows(
             "judge_output_parser_version": (
                 metadata.get("judge_output_parser_version")
                 == JUDGE_OUTPUT_PARSER_VERSION
+            ),
+            "verbalized_output_parser_version": (
+                metadata.get("verbalized_output_parser_version")
+                == VERBALIZED_OUTPUT_PARSER_VERSION
             ),
             "spec_logprobs_mode": (
                 spec.get("logprobs_mode") == CONSTRAINED_LOGPROBS_MODE
@@ -739,6 +744,9 @@ def _clean_summary_row(record: RunRecord) -> dict[str, Any]:
         "judge_output_parser_version": record.metadata.get(
             "judge_output_parser_version"
         ),
+        "verbalized_output_parser_version": record.metadata.get(
+            "verbalized_output_parser_version"
+        ),
         "logprobs_mode": record.spec.logprobs_mode,
         "verdict_token_texts": record.spec.verdict_token_texts,
         "verdict_token_ids": record.spec.verdict_token_ids,
@@ -780,6 +788,9 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
         ),
         "judge_output_parser_version": record.metadata.get(
             "judge_output_parser_version"
+        ),
+        "verbalized_output_parser_version": record.metadata.get(
+            "verbalized_output_parser_version"
         ),
         "logprobs_mode": record.spec.logprobs_mode,
         "verdict_token_texts": record.spec.verdict_token_texts,
@@ -1029,6 +1040,9 @@ def run_silent_bias_clean(
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "verbalized_output_parser_version": (
+            VERBALIZED_OUTPUT_PARSER_VERSION
+        ),
         "logprobs_mode": CONSTRAINED_LOGPROBS_MODE,
         "verdict_token_texts": verdict_token_texts,
         "verdict_token_ids": verdict_token_ids,
@@ -1109,6 +1123,15 @@ def run_silent_bias_cued(
     ):
         raise ValueError(
             "Stage A summary uses an incompatible judge_output_parser_version"
+        )
+    if any(
+        row.get("verbalized_output_parser_version")
+        != VERBALIZED_OUTPUT_PARSER_VERSION
+        for row in model_clean_rows
+    ):
+        raise ValueError(
+            "Stage A summary uses an incompatible "
+            "verbalized_output_parser_version"
         )
     if any(
         row.get("logprobs_mode") != CONSTRAINED_LOGPROBS_MODE
@@ -1229,6 +1252,9 @@ def run_silent_bias_cued(
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
+        "verbalized_output_parser_version": (
+            VERBALIZED_OUTPUT_PARSER_VERSION
+        ),
         "logprobs_mode": CONSTRAINED_LOGPROBS_MODE,
         "verdict_token_texts": verdict_token_texts,
         "verdict_token_ids": verdict_token_ids,

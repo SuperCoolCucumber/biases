@@ -116,6 +116,37 @@ from their stored three-label probabilities: missing allowed-token logits are
 not recoverable. They must be retained only as invalidated audit artifacts and
 rerun before analysis.
 
+### Verbalized-output contract (`strict_v2`)
+
+The verbalized-confidence channel has a parser version independent of the
+constrained verdict parser. The accepted `strict_v2` forms are:
+
+- the existing verdict/confidence line forms, retaining their backward-
+  compatible allowance for a trailing rationale that contains no additional
+  verdict- or confidence-like atom;
+- `Line 1: {A|B|T}` followed by
+  `Line 2: [Confidence:] {0--100}`;
+- `1. {A|B|T}` followed by `2. {0--100}`; or
+- the single-line form `{A|B|T}, {0--100}`.
+
+Each of the three newly added forms must match the whole response. Missing
+scores, answer numbers in place of `A`/`B`/`T`, out-of-range values, prose
+continuations after a new form, and otherwise ambiguous responses remain
+unparseable. This extension was fixed after the corrected Hermes pilot failed
+closed at 364/396 parsed clean responses: 29 of the 32 rejected responses were
+exact instances of the three new atomic forms. The three remaining responses
+are unavailable because they use an answer number, omit the confidence score,
+or append explanatory prose to an otherwise parseable pair. Applying
+`strict_v2` therefore gives 393/396 availability (99.24%) without changing the
+preregistered 99% gate.
+
+Every raw record, flat score, pair summary, and stage summary records
+`verbalized_output_parser_version`. Resume and artifact validation reject a
+missing or stale value. Stored raw verbalized text may be rematerialized with
+the migration CLI; migration must preserve record IDs, pairing keys, input and
+spec hashes, and the original raw outputs. This parser amendment is frozen
+before any Hermes cued-condition inference or full-data inference.
+
 ### Model matrix amendment (2026-07-30)
 
 The gated full-run minimum is four judges: Qwen3-4B, Qwen3-14B,

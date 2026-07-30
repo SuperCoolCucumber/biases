@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from biases.position_bias import (
     JUDGE_OUTPUT_PARSER_VERSION,
+    VERBALIZED_OUTPUT_PARSER_VERSION,
     VLLMJudge,
     _compute_consistency,
     parse_verbalized_output as parse_strict_verbalized_output,
@@ -105,7 +106,7 @@ def parse_verbalized_output(raw_output: object) -> tuple[VerdictLabel, float]:
     if verdict is None or confidence is None:
         raise ParserIntegrityError(
             f"verbalized_raw_output is unparseable or ambiguous under "
-            f"{JUDGE_OUTPUT_PARSER_VERSION}: {raw_output!r}"
+            f"{VERBALIZED_OUTPUT_PARSER_VERSION}: {raw_output!r}"
         )
     return verdict, confidence
 
@@ -247,6 +248,9 @@ def migrate_record_to_current_parser(
     if not isinstance(metadata, dict):
         raise ParserIntegrityError("record metadata must be an object")
     metadata["judge_output_parser_version"] = JUDGE_OUTPUT_PARSER_VERSION
+    metadata["verbalized_output_parser_version"] = (
+        VERBALIZED_OUTPUT_PARSER_VERSION
+    )
     metadata["verbalized_verdict"] = (
         derived.verbalized.verdict.value
         if derived.verbalized.verdict is not None
