@@ -67,6 +67,7 @@ def test_required_paper_model_families_are_registered() -> None:
     assert {
         "qwen3-4b",
         "qwen3-14b",
+        "qwen3-32b",
         "olmo3-7b-instruct",
         "hermes3-llama3.1-8b",
     }.issubset(names)
@@ -74,6 +75,8 @@ def test_required_paper_model_families_are_registered() -> None:
     assert "phi4-14b" in names
     assert "gemma2-9b-it" in names
     assert "mistral-7b-instruct-v0.3" in names
+    assert "qwen2.5-32b" in names
+    assert "llama3.3-70b-instruct" in names
 
 
 @pytest.mark.parametrize(
@@ -81,6 +84,7 @@ def test_required_paper_model_families_are_registered() -> None:
     (
         "qwen3-4b",
         "qwen3-14b",
+        "qwen3-32b",
         "olmo3-7b-instruct",
         "hermes3-llama3.1-8b",
     ),
@@ -99,6 +103,9 @@ def test_full_run_models_pin_hugging_face_revisions() -> None:
     model_names = (
         "qwen3-4b",
         "qwen3-14b",
+        "qwen3-32b",
+        "qwen2.5-32b",
+        "llama3.3-70b-instruct",
         "mistral-7b-instruct-v0.3",
         "skywork-critic-8b",
         "hermes3-llama3.1-8b",
@@ -110,6 +117,62 @@ def test_full_run_models_pin_hugging_face_revisions() -> None:
         revision = get_model_profile(model_name).revision
         assert revision is not None
         assert len(revision) == 40
+
+
+def test_qwen3_32b_profile_uses_the_pinned_non_thinking_contract() -> None:
+    profile = get_model_profile("qwen3-32b")
+
+    assert profile.hf_model_name == "Qwen/Qwen3-32B"
+    assert profile.family == "qwen3"
+    assert profile.revision == "9216db5781bf21249d130ec9da846c4624c16137"
+    assert profile.verdict_token_texts == {
+        "A": ("A",),
+        "B": ("B",),
+        "tie": ("T",),
+    }
+    assert profile.assistant_prefill == "<think>\n\n</think>\n\n"
+    assert profile.stop_token_texts == ("<|im_end|>",)
+
+
+@pytest.mark.parametrize(
+    ("registry_name", "hf_model_name", "family", "revision", "stop_tokens"),
+    (
+        (
+            "qwen2.5-32b",
+            "Qwen/Qwen2.5-32B-Instruct",
+            "qwen2.5",
+            "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
+            ("<|im_end|>",),
+        ),
+        (
+            "llama3.3-70b-instruct",
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "llama3",
+            "6f6073b423013f6a7d4d9f39144961bfbfbc386b",
+            ("<|eot_id|>",),
+        ),
+    ),
+)
+def test_controlled_shift_models_use_pinned_strict_v3_contracts(
+    registry_name: str,
+    hf_model_name: str,
+    family: str,
+    revision: str,
+    stop_tokens: tuple[str, ...],
+) -> None:
+    profile = get_model_profile(registry_name)
+
+    assert profile.hf_model_name == hf_model_name
+    assert profile.family == family
+    assert profile.revision == revision
+    assert profile.assistant_prefill == ""
+    assert profile.stop_token_texts == stop_tokens
+    assert profile.trust_remote_code is False
+    assert profile.verdict_token_texts == {
+        "A": ("A",),
+        "B": ("B",),
+        "tie": ("T",),
+    }
 
 
 def test_olmo2_profile_uses_the_pinned_text_prompt_contract() -> None:
@@ -157,6 +220,18 @@ def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
             assert add_special_tokens is False
             return [ord(text.strip())]
 
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            skip_special_tokens: bool,
+            clean_up_tokenization_spaces: bool,
+        ) -> str:
+            assert skip_special_tokens is False
+            assert clean_up_tokenization_spaces is False
+            assert len(token_ids) == 1
+            return chr(token_ids[0])
+
     class _FakeLLM:
         def __init__(self, **kwargs: object) -> None:
             captured.update(kwargs)
@@ -172,6 +247,7 @@ def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
 
     assert captured["revision"] == profile.revision
     assert captured["tokenizer_revision"] == profile.revision
+    assert captured["trust_remote_code"] is profile.trust_remote_code
     assert captured["logprobs_mode"] == "processed_logprobs"
     assert "max_num_batched_tokens" not in captured
     assert "max_num_seqs" not in captured
@@ -181,6 +257,8 @@ def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
         "qwen3-14b",
         max_num_batched_tokens=32768,
         max_num_seqs=128,
+        enforce_eager=True,
+        disable_custom_all_reduce=True,
     )
 
     assert captured["max_num_batched_tokens"] == 32768
@@ -189,6 +267,93 @@ def test_vllm_judge_passes_pinned_model_and_tokenizer_revisions(
     assert judge.logprobs_mode == "processed_logprobs"
     assert judge.max_num_batched_tokens == 32768
     assert judge.max_num_seqs == 128
+    assert captured["enforce_eager"] is True
+    assert captured["disable_custom_all_reduce"] is True
+    assert judge.enforce_eager is True
+    assert judge.disable_custom_all_reduce is True
+
+
+def test_vllm_judge_explicit_runtime_flags_override_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _DecisionTokenizer:
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            assert add_special_tokens is False
+            return [ord(text.strip())]
+
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            skip_special_tokens: bool,
+            clean_up_tokenization_spaces: bool,
+        ) -> str:
+            assert skip_special_tokens is False
+            assert clean_up_tokenization_spaces is False
+            assert len(token_ids) == 1
+            return chr(token_ids[0])
+
+    class _FakeLLM:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def get_tokenizer(self) -> _DecisionTokenizer:
+            return _DecisionTokenizer()
+
+    monkeypatch.setattr(position_bias, "LLM", _FakeLLM)
+    monkeypatch.setattr(position_bias, "SamplingParams", object())
+    monkeypatch.setenv("BIASES_VLLM_ENFORCE_EAGER", "1")
+    monkeypatch.setenv("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "true")
+
+    judge = position_bias.VLLMJudge(
+        "qwen3-14b",
+        enforce_eager=False,
+        disable_custom_all_reduce=False,
+    )
+
+    assert captured["enforce_eager"] is False
+    assert captured["disable_custom_all_reduce"] is False
+    assert judge.enforce_eager is False
+    assert judge.disable_custom_all_reduce is False
+
+
+def test_vllm_judge_honors_model_specific_remote_code_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _DecisionTokenizer:
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+            assert add_special_tokens is False
+            return [ord(text.strip())]
+
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            skip_special_tokens: bool,
+            clean_up_tokenization_spaces: bool,
+        ) -> str:
+            assert skip_special_tokens is False
+            assert clean_up_tokenization_spaces is False
+            assert len(token_ids) == 1
+            return chr(token_ids[0])
+
+    class _FakeLLM:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def get_tokenizer(self) -> _DecisionTokenizer:
+            return _DecisionTokenizer()
+
+    monkeypatch.setattr(position_bias, "LLM", _FakeLLM)
+    monkeypatch.setattr(position_bias, "SamplingParams", object())
+
+    position_bias.VLLMJudge("llama3.3-70b-instruct")
+
+    assert captured["trust_remote_code"] is False
 
 
 def test_mistral_fails_closed_until_token_prompt_transport_exists(
@@ -212,6 +377,8 @@ def test_existing_slurm_model_names_remain_registered() -> None:
         "Qwen/Qwen3.5-27B",
         "Qwen/Qwen3-14B",
         "Qwen/Qwen3-32B",
+        "Qwen/Qwen2.5-32B-Instruct",
+        "meta-llama/Llama-3.3-70B-Instruct",
         "mistralai/Mistral-7B-Instruct-v0.3",
         "google/gemma-2-27b-it",
         "Skywork/Skywork-Critic-Llama-3.1-8B",

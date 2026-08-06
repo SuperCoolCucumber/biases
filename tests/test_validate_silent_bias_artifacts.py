@@ -129,11 +129,70 @@ def _write_source(path: Path) -> None:
     )
 
 
+def _write_question_disjoint_source(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            (
+                "question_id,prompt,response_a,response_b,winner,turn,routing_split",
+                "q1,First?,Good answer,Bad answer,A,1,calibration",
+                "q2,Second?,Good answer,Bad answer,A,1,test",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_question_disjoint_source_with_skipped_row(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            (
+                "question_id,prompt,response_a,response_b,winner,turn,routing_split",
+                "q1,First?,Good answer,Bad answer,A,1,calibration",
+                "q2,Second?,Good answer,Bad answer,A,1,test",
+                "q3,Skipped?,,Bad answer,A,1,test",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _question_routing_sha256(assignments: dict[str, str]) -> str:
+    payload = [
+        {
+            "question_id": question_id,
+            "routing_split": assignments[question_id],
+        }
+        for question_id in sorted(assignments)
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _runtime_sha256(runtime: dict[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            runtime,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _run_fixture(
     csv_path: Path,
     output_dir: Path,
     *,
     registry_name: str,
+    stage_b_routing_split: str = "all",
 ) -> None:
     profile = get_model_profile(registry_name)
     judge = _FakeJudge(profile.hf_model_name)
@@ -156,8 +215,22 @@ def _run_fixture(
         consistency_runs=2,
         consistency_schedule="extremes",
         include_verbalized_confidence=True,
+        stage_b_routing_split=stage_b_routing_split,
         judge=judge,
     )
+
+
+def _copy_split_stage_layout(
+    co_located_dir: Path,
+    run_root: Path,
+    *,
+    stages: tuple[str, ...] = ("stage_a", "stage_b"),
+) -> None:
+    for stage in stages:
+        stage_dir = run_root / stage
+        stage_dir.mkdir(parents=True)
+        for path in co_located_dir.glob(f"silent_bias_{stage}_*"):
+            shutil.copy2(path, stage_dir / path.name)
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:
@@ -271,6 +344,7 @@ def test_validator_accepts_complete_stage_grids_and_schedule(
 
     assert report["passed"] is True
     assert report["error_count"] == 0
+    assert report["artifacts"][0]["artifact_layout"] == "co_located"
     counts = report["artifacts"][0]["counts"]
     assert counts == {
         "source_pairs": 1,
@@ -314,9 +388,649 @@ def test_validator_accepts_complete_stage_grids_and_schedule(
             "extremes",
             "--min-verbalized-availability",
             "0.75",
+            "--expected-stage-b-routing-split",
+            "test",
+            "--expected-question-routing-sha256",
+            "A" * 64,
+            "--expected-inference-runtime-sha256",
+            "B" * 64,
         ]
     )
     assert parsed_args.min_verbalized_availability == 0.75
+    assert parsed_args.expected_stage_b_routing_split == "test"
+    assert parsed_args.expected_question_routing_sha256 == "A" * 64
+    assert parsed_args.expected_inference_runtime_sha256 == "B" * 64
+
+
+def test_validator_accepts_rendered_split_stage_run_root(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    co_located_dir = tmp_path / "co-located"
+    run_root = tmp_path / "rendered-run-root"
+    _write_source(csv_path)
+    _run_fixture(csv_path, co_located_dir, registry_name="qwen3-4b")
+    _copy_split_stage_layout(co_located_dir, run_root)
+
+    report = _validate(csv_path, run_root)
+
+    assert report["passed"] is True
+    artifact = report["artifacts"][0]
+    assert artifact["artifact_layout"] == "split_stage_directories"
+    assert artifact["stage_dirs"] == {
+        "stage_a": str(run_root / "stage_a"),
+        "stage_b": str(run_root / "stage_b"),
+    }
+    assert artifact["counts"]["stage_a_raw"] == 2
+    assert artifact["counts"]["stage_b_raw"] == 32
+
+
+def test_stage_a_only_mode_is_a_complete_pre_stage_b_gate(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    csv_path = tmp_path / "question-disjoint.csv"
+    co_located_dir = tmp_path / "co-located"
+    run_root = tmp_path / "stage-a-run-root"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        co_located_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    _copy_split_stage_layout(
+        co_located_dir,
+        run_root,
+        stages=("stage_a",),
+    )
+    summary = json.loads(
+        (run_root / "stage_a" / "silent_bias_stage_a_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    runtime_sha256 = _runtime_sha256(summary["inference_runtime"])
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[run_root],
+        validation_scope="stage_a",
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        sampling_temperature=0.7,
+        dataset_split="pilot",
+        require_question_disjoint_routing=True,
+        expected_stage_b_routing_split="test",
+        expected_question_routing_sha256=_question_routing_sha256(
+            {"q1": "calibration", "q2": "test"}
+        ),
+        expected_inference_runtime_sha256=runtime_sha256,
+    )
+
+    assert report["passed"] is True
+    assert report["design"]["validation_scope"] == "stage_a"
+    artifact = report["artifacts"][0]
+    assert artifact["validation_scope"] == "stage_a"
+    assert artifact["stage_b_routing_split"] is None
+    assert artifact["expected_stage_b_routing_split"] == "test"
+    assert artifact["counts"] == {
+        "source_pairs": 2,
+        "stage_a_expected": 4,
+        "stage_a_raw": 4,
+        "stage_a_flat": 4,
+        "stage_a_pair_summary": 4,
+    }
+    assert artifact["inference_runtime_sha256_by_stage"] == {
+        "stage_a": runtime_sha256
+    }
+
+    exit_code = validation_module.main(
+        [
+            "--source-csv",
+            str(csv_path),
+            "--artifact-dir",
+            str(run_root),
+            "--stage-a-only",
+            "--consistency-runs",
+            "2",
+            "--consistency-schedule",
+            "extremes",
+            "--dataset-split",
+            "pilot",
+        ]
+    )
+    cli_report = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert cli_report["passed"] is True
+    assert cli_report["design"]["validation_scope"] == "stage_a"
+
+    (
+        run_root / "stage_a" / "silent_bias_stage_a_pair_summary.jsonl"
+    ).unlink()
+    rejected = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[run_root],
+        validation_scope="stage_a",
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+    )
+    assert rejected["passed"] is False
+    assert rejected["error_counts_by_code"]["missing_artifact_file"] == 1
+
+
+def test_routing_digest_uses_raw_questions_not_only_eligible_pairs(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question-disjoint-with-skipped.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source_with_skipped_row(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    raw_routing_sha256 = _question_routing_sha256(
+        {"q1": "calibration", "q2": "test", "q3": "test"}
+    )
+    eligible_routing_sha256 = _question_routing_sha256(
+        {"q1": "calibration", "q2": "test"}
+    )
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        require_question_disjoint_routing=True,
+        expected_stage_b_routing_split="test",
+        expected_question_routing_sha256=raw_routing_sha256,
+    )
+
+    assert report["passed"] is True
+    routing = report["design"]["question_routing"]
+    assert routing["assignment_sha256"] == raw_routing_sha256
+    assert routing["raw_question_assignment_sha256"] == raw_routing_sha256
+    assert routing["eligible_question_assignment_sha256"] == (
+        eligible_routing_sha256
+    )
+    assert routing["raw_questions"]["question_count"] == 3
+    assert routing["eligible_questions"]["question_count"] == 2
+    assert routing["eligible_pair_count"] == 2
+    assert routing["eligible_pair_assignment_sha256"] not in {
+        raw_routing_sha256,
+        eligible_routing_sha256,
+    }
+
+
+def test_validator_accepts_test_only_stage_b_for_question_disjoint_campaign(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        sampling_temperature=0.7,
+        dataset_split="pilot",
+        require_question_disjoint_routing=True,
+        expected_stage_b_routing_split="test",
+        expected_question_routing_sha256=_question_routing_sha256(
+            {"q1": "calibration", "q2": "test"}
+        ),
+    )
+
+    assert report["passed"] is True
+    routing = report["design"]["question_routing"]
+    assert routing["overlap_count"] == 0
+    assert routing["calibration_questions"] == 1
+    assert routing["test_questions"] == 1
+    assert routing["assignment_sha256"] == routing["expected_assignment_sha256"]
+    artifact = report["artifacts"][0]
+    assert artifact["stage_b_routing_split"] == "test"
+    assert artifact["expected_stage_b_routing_split"] == "test"
+    assert artifact["effective_stage_b_routing_split"] == "test"
+    assert artifact["counts"]["stage_a_expected"] == 4
+    assert artifact["counts"]["stage_b_expected"] == 32
+
+
+def test_validator_rejects_stage_b_scope_that_differs_from_pinned_scope(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        require_question_disjoint_routing=True,
+        expected_stage_b_routing_split="calibration",
+    )
+
+    assert report["passed"] is False
+    assert report["error_counts_by_code"]["stage_b_routing_split_mismatch"] == 1
+    artifact = report["artifacts"][0]
+    assert artifact["stage_b_routing_split"] == "test"
+    assert artifact["effective_stage_b_routing_split"] == "calibration"
+
+
+def test_validator_rejects_wrong_question_routing_assignment_hash(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+        expected_question_routing_sha256="0" * 64,
+    )
+
+    assert report["passed"] is False
+    assert (
+        report["error_counts_by_code"][
+            "question_routing_assignment_sha256_mismatch"
+        ]
+        == 1
+    )
+
+
+def test_validator_rejects_missing_required_inference_runtime(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary_path = output_dir / "silent_bias_stage_a_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("inference_runtime")
+    summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+    )
+
+    assert report["passed"] is False
+    assert report["error_counts_by_code"]["inference_runtime_missing"] == 1
+
+
+def test_validator_rejects_invalid_required_inference_runtime(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary_path = output_dir / "silent_bias_stage_a_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["inference_runtime"]["batch_size"] = 0
+    summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+    )
+
+    assert report["passed"] is False
+    assert report["error_counts_by_code"]["inference_runtime_invalid"] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("max_num_batched_tokens", 0),
+        ("max_num_seqs", False),
+    ),
+)
+def test_validator_rejects_invalid_optional_inference_runtime_controls(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary_path = output_dir / "silent_bias_stage_a_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["inference_runtime"][field] = value
+    summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+    )
+
+    assert report["passed"] is False
+    assert report["error_counts_by_code"]["inference_runtime_invalid"] == 1
+
+
+def test_validator_rejects_inference_runtime_field_set_drift(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary_path = output_dir / "silent_bias_stage_a_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["inference_runtime"]["unfrozen_override"] = 1
+    summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+    )
+
+    assert report["passed"] is False
+    assert report["error_counts_by_code"]["inference_runtime_invalid"] == 1
+
+
+def test_validator_requires_runtime_when_only_routing_hash_is_pinned(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary_path = output_dir / "silent_bias_stage_a_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("inference_runtime")
+    summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_question_routing_sha256=_question_routing_sha256(
+            {"q1": "calibration", "q2": "test"}
+        ),
+    )
+
+    assert report["passed"] is False
+    assert report["error_counts_by_code"]["inference_runtime_missing"] == 1
+
+
+def test_validator_binds_runtime_to_independently_pinned_digest(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary = json.loads(
+        (output_dir / "silent_bias_stage_a_summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_sha256 = _runtime_sha256(summary["inference_runtime"])
+
+    accepted = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+        expected_inference_runtime_sha256=expected_sha256,
+    )
+    rejected = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+        expected_inference_runtime_sha256="0" * 64,
+    )
+
+    assert accepted["passed"] is True
+    assert accepted["design"]["expected_inference_runtime_sha256"] == (
+        expected_sha256
+    )
+    assert accepted["artifacts"][0][
+        "inference_runtime_sha256_by_stage"
+    ] == {"stage_a": expected_sha256, "stage_b": expected_sha256}
+    assert rejected["passed"] is False
+    assert rejected["error_counts_by_code"][
+        "inference_runtime_sha256_mismatch"
+    ] == 2
+
+
+def test_validator_rejects_malformed_expected_runtime_hash(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+
+    with pytest.raises(ValueError, match="inference-runtime SHA-256"):
+        validation_module.validate_artifact_directories(
+            source_csv=csv_path,
+            artifact_dirs=[output_dir],
+            consistency_runs=2,
+            consistency_schedule="extremes",
+            expected_inference_runtime_sha256="not-a-digest",
+        )
+
+
+def test_validator_rejects_cross_stage_inference_runtime_mismatch(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary_path = output_dir / "silent_bias_stage_b_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["inference_runtime"]["dtype"] = "float16"
+    summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+    )
+
+    assert report["passed"] is False
+    assert (
+        report["error_counts_by_code"][
+            "cross_stage_inference_runtime_mismatch"
+        ]
+        == 1
+    )
+
+
+def test_validator_rejects_row_level_inference_runtime_mismatch(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    flat_path = output_dir / "silent_bias_stage_b_uncertainty_scores.jsonl"
+    flat_rows = _read_jsonl(flat_path)
+    flat_rows[0]["inference_runtime"]["batch_size"] = 1
+    _write_jsonl(flat_path, flat_rows)
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+    )
+
+    assert report["passed"] is False
+    assert (
+        report["error_counts_by_code"][
+            "inference_runtime_provenance_mismatch"
+        ]
+        == 1
+    )
+
+
+def test_validator_rejects_controlled_source_pair_count_mismatches(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+    summary_path = output_dir / "silent_bias_stage_b_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["source_pairs"] = 1
+    summary["stage_b_source_pairs"] = 2
+    summary_path.write_text(f"{json.dumps(summary)}\n", encoding="utf-8")
+
+    report = validation_module.validate_artifact_directories(
+        source_csv=csv_path,
+        artifact_dirs=[output_dir],
+        consistency_runs=2,
+        consistency_schedule="extremes",
+        dataset_split="pilot",
+        expected_stage_b_routing_split="test",
+    )
+
+    assert report["passed"] is False
+    assert (
+        report["error_counts_by_code"][
+            "stage_summary_source_pairs_mismatch"
+        ]
+        == 1
+    )
+    assert report["error_counts_by_code"]["stage_b_source_pairs_mismatch"] == 1
+
+
+def test_validator_rejects_malformed_expected_question_routing_hash(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "qwen"
+    _write_question_disjoint_source(csv_path)
+    _run_fixture(
+        csv_path,
+        output_dir,
+        registry_name="qwen3-4b",
+        stage_b_routing_split="test",
+    )
+
+    with pytest.raises(ValueError, match="64 hexadecimal"):
+        validation_module.validate_artifact_directories(
+            source_csv=csv_path,
+            artifact_dirs=[output_dir],
+            consistency_runs=2,
+            consistency_schedule="extremes",
+            expected_question_routing_sha256="not-a-digest",
+        )
 
 
 def test_validator_requires_processed_logprobs_mode_in_every_artifact_layer(

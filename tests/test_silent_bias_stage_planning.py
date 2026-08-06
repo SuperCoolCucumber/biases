@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from biases.pairing import normalize_ordering
-from biases.schemas import CueCongruency, PairOrdering
+from biases.schemas import CueCongruency, CueReferenceKind, PairOrdering
 from biases.stage_planning import (
     CleanPairSummary,
     StageAPairInput,
@@ -83,6 +83,16 @@ def test_stage_b_generates_full_grid_for_both_orderings() -> None:
 
     assert not plan.issues
     assert len(plan.conditions) == 32
+    assert all(
+        item.condition.reference_kind
+        == CueReferenceKind.MODEL_CLEAN_VERDICT.value
+        for item in plan.conditions
+    )
+    assert all(
+        item.condition.metadata["reference_kind"]
+        == CueReferenceKind.MODEL_CLEAN_VERDICT.value
+        for item in plan.conditions
+    )
     selected = [
         item
         for item in plan.conditions
@@ -125,6 +135,16 @@ def test_clean_ties_use_the_order_specific_human_label() -> None:
     assert by_order[PairOrdering.BA].condition.cue_target == "B"
     assert all(item.condition.clean_tie for item in plan.conditions)
     assert all(
+        item.condition.reference_kind
+        == CueReferenceKind.HUMAN_LABEL_FALLBACK.value
+        for item in plan.conditions
+    )
+    assert all(
+        item.condition.metadata["reference_kind"]
+        == CueReferenceKind.HUMAN_LABEL_FALLBACK.value
+        for item in plan.conditions
+    )
+    assert all(
         item.condition.metadata["direction_reference"] == "human_label_for_clean_tie"
         for item in plan.conditions
     )
@@ -143,6 +163,16 @@ def test_simultaneous_clean_and_human_ties_are_reported_not_dropped_silently() -
     assert [issue.code for issue in plan.issues] == ["clean_and_human_tie"]
     assert all(
         item.condition.direction_relative_human == "human_tie"
+        for item in plan.conditions
+    )
+    assert all(
+        item.condition.reference_kind
+        == CueReferenceKind.DETERMINISTIC_FALLBACK.value
+        for item in plan.conditions
+    )
+    assert all(
+        item.condition.metadata["reference_kind"]
+        == CueReferenceKind.DETERMINISTIC_FALLBACK.value
         for item in plan.conditions
     )
     assert all(

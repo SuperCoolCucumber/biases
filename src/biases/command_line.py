@@ -179,6 +179,24 @@ def _add_vllm_scheduler_args(subparser: argparse.ArgumentParser) -> None:
             "default."
         ),
     )
+    subparser.add_argument(
+        "--enforce-eager",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable or disable vLLM eager execution explicitly. Omitted "
+            "retains the legacy environment fallback."
+        ),
+    )
+    subparser.add_argument(
+        "--disable-custom-all-reduce",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable or disable vLLM's custom-all-reduce disable switch "
+            "explicitly. Omitted retains the legacy environment fallback."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -323,6 +341,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum prompt conditions submitted to vLLM together.",
     )
     silent_cued_parser.add_argument(
+        "--stage-b-routing-split",
+        choices=("all", "calibration", "test"),
+        default="all",
+        help=(
+            "Stage A routing split eligible for cued generation. Use test for "
+            "a question-disjoint clean-calibration campaign; all preserves the "
+            "legacy behavior."
+        ),
+    )
+    silent_cued_parser.add_argument(
         "--no-resume",
         action="store_true",
         help="Refuse to reuse an existing Stage B run-record file.",
@@ -435,6 +463,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             dtype=args.dtype,
             max_num_batched_tokens=args.max_num_batched_tokens,
             max_num_seqs=args.max_num_seqs,
+            enforce_eager=args.enforce_eager,
+            disable_custom_all_reduce=args.disable_custom_all_reduce,
             include_verbalized_confidence=not args.skip_verbalized_confidence,
             batch_size=args.batch_size,
             resume=not args.no_resume,
@@ -459,8 +489,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             dtype=args.dtype,
             max_num_batched_tokens=args.max_num_batched_tokens,
             max_num_seqs=args.max_num_seqs,
+            enforce_eager=args.enforce_eager,
+            disable_custom_all_reduce=args.disable_custom_all_reduce,
             include_verbalized_confidence=not args.skip_verbalized_confidence,
             batch_size=args.batch_size,
+            stage_b_routing_split=args.stage_b_routing_split,
             resume=not args.no_resume,
         )
         print(json.dumps(summary, indent=2))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -144,6 +145,9 @@ def test_silent_bias_cli_scheduler_tuning_is_optional() -> None:
 
     assert defaults.max_num_batched_tokens is None
     assert defaults.max_num_seqs is None
+    assert defaults.enforce_eager is None
+    assert defaults.disable_custom_all_reduce is None
+    assert tuned.stage_b_routing_split == "all"
     assert tuned.max_num_batched_tokens == 32768
     assert tuned.max_num_seqs == 128
 
@@ -181,15 +185,21 @@ def test_silent_bias_cli_forwards_scheduler_tuning(
             "32768",
             "--max-num-seqs",
             "128",
+            "--enforce-eager",
+            "--disable-custom-all-reduce",
         ]
     )
 
     assert exit_code == 0
     assert captured["max_num_batched_tokens"] == 32768
     assert captured["max_num_seqs"] == 128
+    assert captured["enforce_eager"] is True
+    assert captured["disable_custom_all_reduce"] is True
 
 
-def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
+def test_scheduler_tuning_is_runtime_provenance_and_stage_b_must_match(
+    tmp_path: Path,
+) -> None:
     csv_path = tmp_path / "pilot.csv"
     _write_fixture(csv_path)
 
@@ -209,8 +219,22 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
         include_verbalized_confidence=False,
         max_num_batched_tokens=32768,
         max_num_seqs=128,
+        enforce_eager=True,
+        disable_custom_all_reduce=True,
         judge=_FakeJudge(),
     )
+    with pytest.raises(ValueError, match="inference-runtime contract"):
+        run_silent_bias_cued(
+            csv_path=csv_path,
+            stage_a_summary_path=Path(tuned_summary["pair_summary_path"]),
+            output_dir=tmp_path / "mismatched-stage-b",
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            max_num_batched_tokens=16384,
+            max_num_seqs=64,
+            judge=_FakeJudge(),
+        )
     cued_summary = run_silent_bias_cued(
         csv_path=csv_path,
         stage_a_summary_path=Path(tuned_summary["pair_summary_path"]),
@@ -218,8 +242,10 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
         model_name="qwen3-4b",
         consistency_runs=0,
         include_verbalized_confidence=False,
-        max_num_batched_tokens=16384,
-        max_num_seqs=64,
+        max_num_batched_tokens=32768,
+        max_num_seqs=128,
+        enforce_eager=True,
+        disable_custom_all_reduce=True,
         judge=_FakeJudge(),
     )
 
@@ -234,6 +260,26 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
     assert default_summary["max_num_seqs"] is None
     assert tuned_summary["max_num_batched_tokens"] == 32768
     assert tuned_summary["max_num_seqs"] == 128
+    runtime = tuned_summary["inference_runtime"]
+    assert runtime["enforce_eager"] is True
+    assert runtime["disable_custom_all_reduce"] is True
+    assert set(runtime["engine_versions"]) == {
+        "python",
+        "torch",
+        "transformers",
+        "vllm",
+    }
+    runtime_without_digest = {
+        key: value for key, value in runtime.items() if key != "runtime_sha256"
+    }
+    assert runtime["runtime_sha256"] == hashlib.sha256(
+        json.dumps(
+            runtime_without_digest,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     assert (
         tuned_summary["judge_output_parser_version"]
         == JUDGE_OUTPUT_PARSER_VERSION
@@ -248,8 +294,9 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
     assert tuned_summary["verbalized_parse_status_counts"] == {
         "not_requested": 4
     }
-    assert cued_summary["max_num_batched_tokens"] == 16384
-    assert cued_summary["max_num_seqs"] == 64
+    assert cued_summary["max_num_batched_tokens"] == 32768
+    assert cued_summary["max_num_seqs"] == 128
+    assert cued_summary["inference_runtime"] == tuned_summary["inference_runtime"]
     assert cued_summary["verbalized_parse_status_counts"] == {
         "not_requested": 64
     }
@@ -342,15 +389,15 @@ def test_scheduler_tuning_is_summary_only_provenance(tmp_path: Path) -> None:
             row["metadata"]["max_num_seqs"],
         )
         for row in cued_rows
-    } == {(16384, 64)}
+    } == {(32768, 128)}
     assert {
         (row["max_num_batched_tokens"], row["max_num_seqs"])
         for row in cued_flat_rows
-    } == {(16384, 64)}
+    } == {(32768, 128)}
     assert {
         (row["max_num_batched_tokens"], row["max_num_seqs"])
         for row in cued_pair_rows
-    } == {(16384, 64)}
+    } == {(32768, 128)}
     assert {
         row["metadata"]["verbalized_parse_status"] for row in cued_rows
     } == {"not_requested"}
@@ -453,6 +500,137 @@ def test_fake_backend_runs_both_stages_and_resume_is_idempotent(
         for dose in doses
         for ordering in ("ab", "ba")
     }
+
+
+def test_stage_b_can_be_limited_to_the_held_out_routing_split(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    judge = _FakeJudge()
+
+    stage_a = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        judge=judge,
+    )
+    stage_b = run_silent_bias_cued(
+        csv_path=csv_path,
+        stage_a_summary_path=Path(stage_a["pair_summary_path"]),
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        stage_b_routing_split="test",
+        judge=judge,
+    )
+
+    assert stage_a["records_written"] == 4
+    assert stage_b["records_written"] == 32
+    assert stage_b["source_pairs"] == 2
+    assert stage_b["stage_b_source_pairs"] == 1
+    assert stage_b["stage_b_routing_split"] == "test"
+    assert stage_a["inference_runtime"] == stage_b["inference_runtime"]
+    cued_rows = _read_jsonl(Path(stage_b["uncertainty_scores_path"]))
+    assert {row["question_id"] for row in cued_rows} == {"q2"}
+    assert {row["routing_split"] for row in cued_rows} == {"test"}
+    assert {row["model_revision"] for row in cued_rows} == {
+        get_model_profile("qwen3-4b").revision
+    }
+    assert {
+        json.dumps(row["inference_runtime"], sort_keys=True)
+        for row in cued_rows
+    } == {json.dumps(stage_b["inference_runtime"], sort_keys=True)}
+
+
+def test_controlled_stage_b_requires_complete_stage_a_and_matching_runtime(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "question_disjoint.csv"
+    _write_fixture(csv_path)
+    stage_a = run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=tmp_path / "stage-a",
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        batch_size=64,
+        judge=_FakeJudge(),
+    )
+
+    incomplete_path = tmp_path / "incomplete-stage-a.jsonl"
+    rows = _read_jsonl(Path(stage_a["pair_summary_path"]))
+    incomplete_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows[1:]),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="incomplete or duplicated"):
+        run_silent_bias_cued(
+            csv_path=csv_path,
+            stage_a_summary_path=incomplete_path,
+            output_dir=tmp_path / "incomplete-stage-b",
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            stage_b_routing_split="test",
+            judge=_FakeJudge(),
+        )
+
+    with pytest.raises(ValueError, match="inference-runtime contract"):
+        run_silent_bias_cued(
+            csv_path=csv_path,
+            stage_a_summary_path=Path(stage_a["pair_summary_path"]),
+            output_dir=tmp_path / "mismatched-stage-b",
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            batch_size=32,
+            stage_b_routing_split="test",
+            judge=_FakeJudge(),
+        )
+
+    with pytest.raises(ValueError, match="inference-runtime contract"):
+        run_silent_bias_cued(
+            csv_path=csv_path,
+            stage_a_summary_path=Path(stage_a["pair_summary_path"]),
+            output_dir=tmp_path / "mismatched-all-stage-b",
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            batch_size=32,
+            stage_b_routing_split="all",
+            judge=_FakeJudge(),
+        )
+
+
+def test_resume_rejects_changed_inference_runtime(tmp_path: Path) -> None:
+    csv_path = tmp_path / "pilot.csv"
+    output_dir = tmp_path / "outputs"
+    _write_fixture(csv_path)
+    run_silent_bias_clean(
+        csv_path=csv_path,
+        output_dir=output_dir,
+        model_name="qwen3-4b",
+        consistency_runs=0,
+        include_verbalized_confidence=False,
+        batch_size=64,
+        judge=_FakeJudge(),
+    )
+
+    with pytest.raises(ValueError, match="inference_runtime"):
+        run_silent_bias_clean(
+            csv_path=csv_path,
+            output_dir=output_dir,
+            model_name="qwen3-4b",
+            consistency_runs=0,
+            include_verbalized_confidence=False,
+            batch_size=32,
+            judge=_FakeJudge(),
+        )
 
 
 def test_flat_scores_include_each_secondary_channel_verdict(

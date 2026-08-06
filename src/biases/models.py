@@ -34,6 +34,7 @@ class ModelProfile:
     )
     assistant_prefill: str = ""
     stop_token_texts: tuple[str, ...] = ()
+    trust_remote_code: bool = True
     supports_system_role: bool = True
     supports_text_prompt_transport: bool = True
 
@@ -104,6 +105,15 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         family="qwen2.5",
         stop_token_texts=("<|im_end|>",),
     ),
+    "qwen2.5-32b": ModelProfile(
+        registry_name="qwen2.5-32b",
+        hf_model_name="Qwen/Qwen2.5-32B-Instruct",
+        family="qwen2.5",
+        revision="5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd",
+        verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
+        stop_token_texts=("<|im_end|>",),
+        trust_remote_code=False,
+    ),
     "qwen3-4b": ModelProfile(
         registry_name="qwen3-4b",
         hf_model_name="Qwen/Qwen3-4B",
@@ -126,6 +136,8 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         registry_name="qwen3-32b",
         hf_model_name="Qwen/Qwen3-32B",
         family="qwen3",
+        revision="9216db5781bf21249d130ec9da846c4624c16137",
+        verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
         assistant_prefill="<think>\n\n</think>\n\n",
         stop_token_texts=("<|im_end|>",),
     ),
@@ -193,6 +205,15 @@ MODEL_REGISTRY: Mapping[str, ModelProfile] = {
         revision="896ea440e5a9e6070e3d8a2774daf2b481ab425b",
         verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
         stop_token_texts=("<|im_end|>",),
+    ),
+    "llama3.3-70b-instruct": ModelProfile(
+        registry_name="llama3.3-70b-instruct",
+        hf_model_name="meta-llama/Llama-3.3-70B-Instruct",
+        family="llama3",
+        revision="6f6073b423013f6a7d4d9f39144961bfbfbc386b",
+        verdict_token_texts=CANONICAL_VERDICT_TOKEN_TEXTS,
+        stop_token_texts=("<|eot_id|>",),
+        trust_remote_code=False,
     ),
     "olmo2-7b-instruct": ModelProfile(
         registry_name="olmo2-7b-instruct",

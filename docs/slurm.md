@@ -59,6 +59,7 @@ Render a pilot for two model templates:
 python3.12 scripts/render_slurm_jobs.py \
   --kind silent-bias \
   --models qwen3_14b mistral7b \
+  --run-group silent_bias_question_disjoint_82f1a879 \
   --data-file mtbench_stratified_198.csv \
   --limit 198 \
   --consistency-runs 8 \
@@ -68,13 +69,14 @@ python3.12 scripts/render_slurm_jobs.py \
 
 The renderer does not set a partition, QOS, or account unless explicitly
 provided. GPU, memory, wall-time, and tensor-parallel values are starting
-points, not validated scheduler requirements. Override them while rendering or
-edit the generated files after consulting the active infrastructure:
+points, not validated scheduler requirements. Override them while rendering
+after consulting the active infrastructure:
 
 ```bash
 python3.12 scripts/render_slurm_jobs.py \
   --kind silent-bias \
   --models qwen3_14b \
+  --run-group silent_bias_question_disjoint_82f1a879 \
   --gpus <count> \
   --mem <memory> \
   --time <walltime> \
@@ -92,11 +94,12 @@ bash -n slurm/generated/silent_bias_stage_a_qwen3_14b.slurm
 bash -n slurm/generated/silent_bias_stage_b_qwen3_14b.slurm
 ```
 
-Submit Stage B only after Stage A succeeds. Use the same `RUN_GROUP` for both
-jobs so their default artifact paths match:
+Submit Stage B only after Stage A succeeds. The required `--run-group` is
+hard-bound into both generated launchers, so their artifact paths match and a
+model-only default cannot accidentally reuse another campaign's output. Each
+model is placed beneath its own model-slug directory inside the campaign:
 
 ```bash
-export RUN_GROUP=<stable-run-group>
 stage_a_job="$(
   sbatch --parsable slurm/generated/silent_bias_stage_a_qwen3_14b.slurm
 )"
@@ -104,6 +107,10 @@ sbatch \
   --dependency="afterok:${stage_a_job}" \
   slurm/generated/silent_bias_stage_b_qwen3_14b.slurm
 ```
+
+Choose a unique, immutable run group for every campaign. The renderer creates
+launcher files exclusively and fails if a target already exists; render a new
+campaign into a fresh output directory instead of overwriting prior evidence.
 
 Generated jobs default to the CLI commands `run-silent-bias-clean` and
 `run-silent-bias-cued`. Override `STAGE_A_COMMAND` or `STAGE_B_COMMAND` at

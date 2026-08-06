@@ -164,9 +164,24 @@ missing or stale value. Stored raw verbalized text may be rematerialized with
 the migration CLI; migration must preserve record IDs, pairing keys, input and
 spec hashes, and the original raw outputs.
 
-### Model matrix amendment (2026-07-30)
+### Historical strict-v3 model matrix amendment (2026-07-30)
 
-The gated full-run minimum is four judges: Qwen3-4B, Qwen3-14B,
+This section records the model-selection and gating decisions for the completed
+strict-v3 evidence package. It is historical provenance, not the model matrix
+for the active controlled uncertainty-shift campaign. References below to the
+"full run," "required models," or pending strict-v3 gates apply only to that
+historical campaign and are retained so its results remain interpretable.
+
+The active controlled-shift replication instead evaluates exactly two current,
+higher-capacity judges: `Qwen/Qwen2.5-32B-Instruct` and
+`meta-llama/Llama-3.3-70B-Instruct`, each at the immutable revision specified in
+`docs/controlled_uncertainty_shift_design.md`. That controlled design takes
+precedence over this historical section for all new inference, calibration,
+analysis, and reporting. Qwen3, OLMo3, and Hermes artifacts remain preserved
+strict-v3 evidence; they are not active controlled-shift research objects and
+must not be silently pooled with or substituted for the 32B/70B models.
+
+The historical gated full-run minimum was four judges: Qwen3-4B, Qwen3-14B,
 OLMo3-7B-Instruct (`allenai/Olmo-3-7B-Instruct`), and
 Hermes3-Llama3.1-8B (`NousResearch/Hermes-3-Llama-3.1-8B`). This gives three
 architecture families (Qwen3, OLMo3, and Llama 3.1). Every checkpoint is
@@ -174,14 +189,15 @@ pinned to an immutable model revision and must pass its own 20-example native
 and constrained verdict-extraction gates. Skywork-Critic-Llama-3.1-8B is
 optional and is included only if it passes those same gates; otherwise its
 failed smoke remains an explicit exclusion artifact.
-The shared campaign context limit is 4,096 tokens. Before inference, every
-model must pass a full-grid prompt-length preflight that includes generation
-headroom; the persisted report is an operational gate, not merely a diagnostic.
+The historical campaign context limit was 4,096 tokens. Before its inference,
+every model had to pass a full-grid prompt-length preflight that included
+generation headroom; the persisted report is an operational gate, not merely a
+diagnostic.
 
-Mistral-7B-Instruct-v0.3 remains a stretch model. Its pinned
+Mistral-7B-Instruct-v0.3 was a stretch model. Its pinned
 `MistralCommonTokenizer` warns that string rendering with
 `apply_chat_template(..., tokenize=False)` is unsafe, while the current runner
-transports auditable string prompts to vLLM. Mistral is therefore excluded
+transports auditable string prompts to vLLM. Mistral was therefore excluded
 until a token-ID prompt adapter preserves canonical chat-template IDs and
 includes those IDs in prompt hashing and provenance. This is an implementation
 integrity exclusion, not a result-driven model substitution.
@@ -203,10 +219,11 @@ the earlier multi-surface whitelist allowed the emitted-token verdict to
 diverge from the MAP after alternate token surfaces were aggregated by label.
 This is a successful fail-closed detection, not an admissible result.
 
-The four required models must use the literal `A`/`B`/`T` contract uniformly
-and rerun their 20-example constrained and native smokes under `strict_v3`.
-Earlier smoke passes do not carry forward. The preregistered 99% native gate
-is unchanged, and no pilot starts until all four models pass it.
+The four historical models were required to use the literal `A`/`B`/`T`
+contract uniformly and rerun their 20-example constrained and native smokes
+under `strict_v3`. Earlier smoke passes did not carry forward. The
+preregistered 99% native gate was unchanged, and no pilot was to start until
+all four models passed it.
 
 The `strict_v3` reruns completed on 2026-07-30. Each of Qwen3-4B, Qwen3-14B,
 OLMo3-7B-Instruct, and Hermes3-Llama3.1-8B passed 20/20 constrained examples
@@ -214,8 +231,9 @@ with valid three-label probabilities and MAP-aligned verdicts, and 20/20
 native examples satisfied the first-token-and-verdict-agreement contract.
 All artifacts declare `processed_logprobs`, `strict_v3`, and the literal
 `A`/`B`/`T` token mapping. This clears only the model smoke prerequisite; the
-198-pair pilot, artifact validation, analyses, and all RQ findings remain
-pending. The per-model artifact paths and SHA-256 ledger are recorded in
+198-pair pilot, artifact validation, analyses, and all RQ findings were still
+pending at the time of this amendment. The per-model artifact paths and
+SHA-256 ledger are recorded in
 `docs/codex_handoff.md`.
 
 ## Splits and Analysis Population

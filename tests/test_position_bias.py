@@ -12,6 +12,7 @@ from biases.position_bias import (
     _extract_conversation_pair,
     _parse_conversation,
     load_position_pairs,
+    load_position_pairs_with_eligibility,
     parse_verbalized_output,
 )
 from biases.position_prompts import build_position_prompt_package
@@ -42,6 +43,88 @@ def test_load_position_pairs_creates_original_and_swapped_examples(tmp_path: Pat
     assert pair.swapped.human_winner == VerdictLabel.A
     assert pair.original.metadata["response_id_by_label"]["A"] == "q1:response_a"
     assert pair.swapped.metadata["response_id_by_label"]["A"] == "q1:response_b"
+
+
+def test_pair_loader_reports_deterministic_row_eligibility(tmp_path: Path) -> None:
+    csv_path = tmp_path / "eligibility.csv"
+    rows = [
+        ("q-valid-cal", "A", "B", "model_a", "calibration"),
+        ("q-valid-test", "A", "B", "model_b", "test"),
+        ("q-missing-winner", "A", "B", "", "calibration"),
+        ("q-invalid-winner", "A", "B", "neither", "test"),
+        ("q-missing-a", "", "B", "model_b", "calibration"),
+        ("q-missing-b", "A", "", "model_a", "test"),
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            (
+                "question_id",
+                "prompt",
+                "response_a",
+                "response_b",
+                "winner",
+                "routing_split",
+            )
+        )
+        for question_id, response_a, response_b, winner, split in rows:
+            writer.writerow(
+                (question_id, "Question?", response_a, response_b, winner, split)
+            )
+
+    pairs, audit = load_position_pairs_with_eligibility(csv_path)
+    repeated_pairs, repeated_audit = load_position_pairs_with_eligibility(csv_path)
+
+    assert [pair.pair_id for pair in pairs] == ["q-valid-cal", "q-valid-test"]
+    assert [pair.pair_id for pair in load_position_pairs(csv_path)] == [
+        pair.pair_id for pair in pairs
+    ]
+    assert [pair.pair_id for pair in repeated_pairs] == [
+        pair.pair_id for pair in pairs
+    ]
+    assert audit.raw_row_count == 6
+    assert audit.to_dict()["eligibility_contract"] == "position_pair_loader_v1"
+    assert audit.eligible_pair_count == 2
+    assert audit.skipped_row_count == 4
+    assert audit.skipped_reason_counts == {
+        "invalid_winner": 1,
+        "missing_response_a": 1,
+        "missing_response_b": 1,
+        "missing_winner": 1,
+    }
+    assert audit.routing_counts == {
+        "raw_rows": {"calibration": 3, "test": 3},
+        "eligible_pairs": {"calibration": 1, "test": 1},
+        "skipped_rows": {"calibration": 2, "test": 2},
+    }
+    assert [row["skip_reasons"] for row in audit.skipped_rows] == [
+        ["missing_winner"],
+        ["invalid_winner"],
+        ["missing_response_a"],
+        ["missing_response_b"],
+    ]
+    assert len(audit.eligibility_sha256) == 64
+    assert repeated_audit.eligibility_sha256 == audit.eligibility_sha256
+
+
+@pytest.mark.parametrize(
+    "header",
+    (
+        "question_id,prompt,response_a,winner",
+        "question_id,prompt,response_b,winner",
+        "question_id,conversation_a,winner",
+        "question_id,conversation_b,winner",
+    ),
+)
+def test_pair_loader_rejects_incomplete_input_schemas(
+    tmp_path: Path,
+    header: str,
+) -> None:
+    csv_path = tmp_path / "incomplete.csv"
+    csv_path.write_text(f"{header}\nq1,value,value,model_a\n", encoding="utf-8")
+
+    with pytest.raises(KeyError, match="prompt/response_a/response_b"):
+        load_position_pairs_with_eligibility(csv_path)
 
 
 @pytest.mark.parametrize(
@@ -322,16 +405,66 @@ def test_decision_token_map_rejects_cross_label_id_collisions() -> None:
         }
 
     class _Tokenizer:
-        @staticmethod
-        def encode(text: str, *, add_special_tokens: bool) -> list[int]:
+        last_text = ""
+
+        def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
             assert add_special_tokens is False
+            self.last_text = text
             return [{"A": 10, "B": 10, "T": 30}[text]]
+
+        def decode(
+            self,
+            token_ids: list[int],
+            *,
+            skip_special_tokens: bool,
+            clean_up_tokenization_spaces: bool,
+        ) -> str:
+            assert skip_special_tokens is False
+            assert clean_up_tokenization_spaces is False
+            assert token_ids == [{"A": 10, "B": 10, "T": 30}[self.last_text]]
+            return self.last_text
 
     judge = QwenJudge.__new__(QwenJudge)
     judge.profile = _Profile()
     judge.tokenizer = _Tokenizer()
 
     with pytest.raises(RuntimeError, match="maps to both 'A' and 'B'"):
+        judge._build_decision_label_token_maps()
+
+
+def test_decision_token_map_rejects_nonliteral_singleton_decoding() -> None:
+    class _Profile:
+        verdict_token_texts = {
+            "A": ("A",),
+            "B": ("B",),
+            "tie": ("T",),
+        }
+
+    class _Tokenizer:
+        @staticmethod
+        def encode(text: str, *, add_special_tokens: bool) -> list[int]:
+            assert add_special_tokens is False
+            return [{"A": 10, "B": 20, "T": 30}[text]]
+
+        @staticmethod
+        def decode(
+            token_ids: list[int],
+            *,
+            skip_special_tokens: bool,
+            clean_up_tokenization_spaces: bool,
+        ) -> str:
+            assert skip_special_tokens is False
+            assert clean_up_tokenization_spaces is False
+            return {10: " A", 20: "B", 30: "T"}[token_ids[0]]
+
+    judge = QwenJudge.__new__(QwenJudge)
+    judge.profile = _Profile()
+    judge.tokenizer = _Tokenizer()
+
+    with pytest.raises(
+        RuntimeError,
+        match="Decision surface 'A'.*decoded as ' A'",
+    ):
         judge._build_decision_label_token_maps()
 
 

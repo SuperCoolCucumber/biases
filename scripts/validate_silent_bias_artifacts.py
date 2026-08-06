@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import math
 from collections import Counter
@@ -43,6 +45,8 @@ from biases.utils import stable_hash
 
 
 StageName = Literal["stage_a", "stage_b"]
+ValidationScope = Literal["both", "stage_a"]
+StageBRoutingSplit = Literal["all", "calibration", "test"]
 REQUIRED_PROBABILITY_LABELS = frozenset(("A", "B", "tie"))
 RAW_FILENAMES: Mapping[StageName, str] = {
     "stage_a": "silent_bias_stage_a_run_records.jsonl",
@@ -73,6 +77,12 @@ class SourcePair:
 class ArtifactResult:
     report: dict[str, Any]
     grids: Mapping[StageName, frozenset[tuple[str, str, str]]]
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactLayout:
+    kind: Literal["co_located", "split_stage_directories"]
+    stage_dirs: Mapping[StageName, Path]
 
 
 class IssueCollector:
@@ -115,6 +125,57 @@ class IssueCollector:
             "errors": self._issues,
             "errors_truncated": self.error_count > len(self._issues),
         }
+
+
+def _artifact_layout(
+    artifact_dir: Path,
+    *,
+    stages: Sequence[StageName],
+    collector: IssueCollector,
+) -> ArtifactLayout:
+    """Resolve legacy co-located artifacts or the rendered stage layout.
+
+    Scientific launchers write ``stage_a`` and ``stage_b`` as sibling child
+    directories beneath one model run root. Older campaigns wrote both stages
+    directly into one directory. Mixing the layouts is ambiguous and is
+    rejected rather than silently choosing one copy.
+    """
+
+    direct_names = {
+        RAW_FILENAMES[stage]
+        for stage in stages
+    } | {
+        SCORE_FILENAMES[stage]
+        for stage in stages
+    } | {
+        PAIR_SUMMARY_FILENAMES[stage]
+        for stage in stages
+    } | {
+        STAGE_SUMMARY_FILENAMES[stage]
+        for stage in stages
+    }
+    has_direct_files = any((artifact_dir / name).exists() for name in direct_names)
+    has_stage_children = any((artifact_dir / stage).exists() for stage in stages)
+    if has_direct_files and has_stage_children:
+        collector.add(
+            "ambiguous_artifact_layout",
+            "artifact root contains both co-located stage files and stage child "
+            "directories; preserve one unambiguous layout",
+            artifact_dir=artifact_dir,
+        )
+        return ArtifactLayout(
+            kind="co_located",
+            stage_dirs={stage: artifact_dir for stage in stages},
+        )
+    if has_stage_children:
+        return ArtifactLayout(
+            kind="split_stage_directories",
+            stage_dirs={stage: artifact_dir / stage for stage in stages},
+        )
+    return ArtifactLayout(
+        kind="co_located",
+        stage_dirs={stage: artifact_dir for stage in stages},
+    )
 
 
 def _read_jsonl(
@@ -241,6 +302,257 @@ def _source_pairs(
             )
         )
     return tuple(source_pairs)
+
+
+def _normalize_expected_sha256(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("expected routing assignment SHA-256 must be a string")
+    normalized = value.strip().lower()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError(
+            "expected routing assignment SHA-256 must contain exactly 64 "
+            "hexadecimal characters"
+        )
+    return normalized
+
+
+def _normalize_expected_inference_runtime_sha256(
+    value: str | None,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("expected inference-runtime SHA-256 must be a string")
+    normalized = value.strip().lower()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError(
+            "expected inference-runtime SHA-256 must contain exactly 64 "
+            "hexadecimal characters"
+        )
+    return normalized
+
+
+def _inference_runtime_sha256(runtime: Mapping[str, Any]) -> str:
+    serialized = json.dumps(
+        dict(runtime),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _routing_assignment_summary(
+    assignments: Mapping[str, set[str]],
+) -> dict[str, Any]:
+    invalid = {
+        question_id: sorted(values)
+        for question_id, values in assignments.items()
+        if values - {"calibration", "test"}
+    }
+    overlaps = {
+        question_id: sorted(values)
+        for question_id, values in assignments.items()
+        if len(values) != 1
+    }
+    normalized = [
+        {"question_id": question_id, "routing_split": next(iter(values))}
+        for question_id, values in sorted(assignments.items())
+        if len(values) == 1
+    ]
+    observed = {
+        row["routing_split"]
+        for row in normalized
+        if row["routing_split"] in {"calibration", "test"}
+    }
+    assignment_sha256 = hashlib.sha256(
+        json.dumps(
+            normalized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "question_count": len(assignments),
+        "calibration_questions": sum(
+            row["routing_split"] == "calibration" for row in normalized
+        ),
+        "test_questions": sum(
+            row["routing_split"] == "test" for row in normalized
+        ),
+        "overlap_count": len(overlaps),
+        "invalid_count": len(invalid),
+        "observed_splits": sorted(observed),
+        "assignment_sha256": assignment_sha256,
+        "overlaps": overlaps,
+        "invalid": invalid,
+    }
+
+
+def _raw_question_routing_assignments(
+    source_csv: Path,
+    *,
+    required: bool,
+) -> dict[str, set[str]]:
+    with source_csv.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = set(reader.fieldnames or ())
+        missing = {"question_id", "routing_split"} - fieldnames
+        if missing:
+            if not required:
+                return {}
+            raise ValueError(
+                "source CSV must contain question_id and routing_split for "
+                "question-disjoint routing validation; missing="
+                f"{sorted(missing)!r}"
+            )
+        assignments: dict[str, set[str]] = {}
+        for row in reader:
+            question_id = str(row.get("question_id") or "").strip()
+            routing_split = str(row.get("routing_split") or "").strip().lower()
+            assignments.setdefault(question_id, set()).add(routing_split)
+    return assignments
+
+
+def _question_routing_report(
+    source_csv: Path,
+    source_pairs: Sequence[SourcePair],
+    *,
+    required: bool,
+    expected_assignment_sha256: str | None,
+    collector: IssueCollector,
+) -> dict[str, Any]:
+    raw_assignments = _raw_question_routing_assignments(
+        source_csv,
+        required=required,
+    )
+    eligible_assignments: dict[str, set[str]] = {}
+    eligible_pair_rows: list[dict[str, str]] = []
+    for source in source_pairs:
+        question_id = str(source.pair_input.question_id)
+        example = source.examples_by_ordering[PairOrdering.AB.value]
+        value = example.metadata.get("routing_split")
+        routing_split = "" if value is None else str(value).strip().lower()
+        eligible_assignments.setdefault(question_id, set()).add(routing_split)
+        eligible_pair_rows.append(
+            {
+                "pair_identity_key": source.pair_identity_key,
+                "question_id": question_id,
+                "routing_split": routing_split,
+            }
+        )
+
+    raw = _routing_assignment_summary(raw_assignments)
+    eligible = _routing_assignment_summary(eligible_assignments)
+    eligible_pair_rows.sort(
+        key=lambda row: (row["pair_identity_key"], row["question_id"])
+    )
+    eligible_pair_assignment_sha256 = hashlib.sha256(
+        json.dumps(
+            eligible_pair_rows,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    if required and raw["invalid"]:
+        collector.add(
+            "question_routing_invalid",
+            f"{len(raw['invalid'])} raw question(s) have missing/unknown routing; "
+            f"sample={list(sorted(raw['invalid'].items()))[:3]!r}",
+        )
+    if required and raw["overlaps"]:
+        collector.add(
+            "question_routing_overlap",
+            f"{len(raw['overlaps'])} raw question(s) span multiple routing splits; "
+            f"sample={list(sorted(raw['overlaps'].items()))[:3]!r}",
+        )
+    if required and set(raw["observed_splits"]) != {"calibration", "test"}:
+        collector.add(
+            "question_routing_split_missing",
+            "raw question-disjoint routing must contain both calibration and "
+            f"test questions; observed={raw['observed_splits']!r}",
+        )
+    if required and eligible["invalid"]:
+        collector.add(
+            "eligible_pair_routing_invalid",
+            f"{len(eligible['invalid'])} eligible question(s) have "
+            "missing/unknown routing",
+        )
+    if required and eligible["overlaps"]:
+        collector.add(
+            "eligible_pair_routing_overlap",
+            f"{len(eligible['overlaps'])} eligible question(s) span multiple "
+            "routing splits",
+        )
+    if required and set(eligible["observed_splits"]) != {"calibration", "test"}:
+        collector.add(
+            "eligible_pair_routing_split_missing",
+            "eligible pairs must contain calibration and test questions; "
+            f"observed={eligible['observed_splits']!r}",
+        )
+    if (
+        expected_assignment_sha256 is not None
+        and raw["assignment_sha256"] != expected_assignment_sha256
+    ):
+        collector.add(
+            "question_routing_assignment_sha256_mismatch",
+            "raw question-routing assignment SHA-256 is "
+            f"{raw['assignment_sha256']}; expected {expected_assignment_sha256}",
+        )
+    return {
+        "required": required,
+        "expected_assignment_sha256": expected_assignment_sha256,
+        # Backward-compatible fields now explicitly describe the raw routed
+        # question universe and are the only fields compared with the frozen
+        # routing-manifest assignment digest.
+        "question_count": raw["question_count"],
+        "calibration_questions": raw["calibration_questions"],
+        "test_questions": raw["test_questions"],
+        "overlap_count": raw["overlap_count"],
+        "invalid_count": raw["invalid_count"],
+        "assignment_sha256": raw["assignment_sha256"],
+        "raw_question_assignment_sha256": raw["assignment_sha256"],
+        "eligible_question_assignment_sha256": eligible["assignment_sha256"],
+        "eligible_pair_assignment_sha256": eligible_pair_assignment_sha256,
+        "raw_questions": {
+            key: value
+            for key, value in raw.items()
+            if key not in {"overlaps", "invalid"}
+        },
+        "eligible_questions": {
+            key: value
+            for key, value in eligible.items()
+            if key not in {"overlaps", "invalid"}
+        },
+        "eligible_pair_count": len(eligible_pair_rows),
+    }
+
+
+def _declared_stage_b_routing_split(
+    summary: Mapping[str, Any],
+    *,
+    collector: IssueCollector,
+    artifact_dir: Path,
+) -> StageBRoutingSplit:
+    value = str(summary.get("stage_b_routing_split", "all")).strip().lower()
+    if value not in {"all", "calibration", "test"}:
+        collector.add(
+            "stage_b_routing_split_invalid",
+            f"stage_b_routing_split is {value!r}; expected all/calibration/test",
+            artifact_dir=artifact_dir,
+            stage="stage_b",
+        )
+        return "all"
+    return value  # type: ignore[return-value]
 
 
 def _model_name(rows_by_stage: Mapping[StageName, Sequence[Mapping[str, Any]]]) -> str | None:
@@ -963,6 +1275,303 @@ def _validate_stage_summary(
             artifact_dir=artifact_dir,
             stage=stage,
         )
+
+
+def _validate_inference_runtime_contract(
+    raw_rows: Mapping[StageName, Sequence[Mapping[str, Any]]],
+    score_rows: Mapping[StageName, Sequence[Mapping[str, Any]]],
+    pair_rows: Mapping[StageName, Sequence[Mapping[str, Any]]],
+    stage_summaries: Mapping[StageName, Mapping[str, Any]],
+    *,
+    stages: Sequence[StageName],
+    required: bool,
+    expected_sha256: str | None,
+    collector: IssueCollector,
+    artifact_dir: Path,
+) -> dict[StageName, str]:
+    if not required:
+        return {}
+
+    runtimes: dict[StageName, dict[str, Any]] = {}
+    runtime_sha256_by_stage: dict[StageName, str] = {}
+    for stage in stages:
+        summary = stage_summaries[stage]
+        if "inference_runtime" not in summary:
+            collector.add(
+                "inference_runtime_missing",
+                "stage summary has no inference_runtime mapping",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+            continue
+        raw_runtime = summary.get("inference_runtime")
+        if not isinstance(raw_runtime, Mapping):
+            collector.add(
+                "inference_runtime_invalid",
+                "stage summary inference_runtime must be a mapping",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+            continue
+
+        runtime = dict(raw_runtime)
+        runtimes[stage] = runtime
+        runtime_sha256 = _inference_runtime_sha256(runtime)
+        runtime_sha256_by_stage[stage] = runtime_sha256
+        if expected_sha256 is not None and runtime_sha256 != expected_sha256:
+            collector.add(
+                "inference_runtime_sha256_mismatch",
+                "inference-runtime SHA-256 is "
+                f"{runtime_sha256}; expected {expected_sha256}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        expected_fields = {
+            "model_registry_name",
+            "model_hf_name",
+            "model_revision",
+            "tensor_parallel_size",
+            "max_model_len",
+            "gpu_memory_utilization",
+            "dtype",
+            "batch_size",
+            "max_num_batched_tokens",
+            "max_num_seqs",
+            "enforce_eager",
+            "disable_custom_all_reduce",
+            "seed",
+            "consistency_runs",
+            "consistency_schedule",
+            "sampling_temperature",
+            "include_verbalized_confidence",
+            "engine_versions",
+            "runtime_sha256",
+        }
+        if set(runtime) != expected_fields:
+            collector.add(
+                "inference_runtime_invalid",
+                "inference_runtime must contain exactly the controlled runtime "
+                f"fields; missing={sorted(expected_fields - set(runtime))!r}, "
+                f"unexpected={sorted(set(runtime) - expected_fields)!r}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        runtime_without_digest = {
+            key: value for key, value in runtime.items() if key != "runtime_sha256"
+        }
+        embedded_digest = runtime.get("runtime_sha256")
+        observed_embedded_digest = _inference_runtime_sha256(
+            runtime_without_digest
+        )
+        if embedded_digest != observed_embedded_digest:
+            collector.add(
+                "inference_runtime_digest_mismatch",
+                "embedded inference-runtime digest is "
+                f"{embedded_digest!r}; expected {observed_embedded_digest}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        engine_versions = runtime.get("engine_versions")
+        expected_engine_fields = {"python", "torch", "transformers", "vllm"}
+        if not isinstance(engine_versions, Mapping) or (
+            set(engine_versions) != expected_engine_fields
+        ):
+            collector.add(
+                "inference_runtime_engine_versions_invalid",
+                "engine_versions must contain exactly python, torch, "
+                "transformers, and vllm",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        elif any(
+            value is not None and (
+                not isinstance(value, str) or not value.strip()
+            )
+            for value in engine_versions.values()
+        ):
+            collector.add(
+                "inference_runtime_engine_versions_invalid",
+                "engine version values must be nonblank strings or null",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        for field in ("enforce_eager", "disable_custom_all_reduce"):
+            if not isinstance(runtime.get(field), bool):
+                collector.add(
+                    "inference_runtime_invalid",
+                    f"inference_runtime.{field} must be boolean; observed "
+                    f"{runtime.get(field)!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                )
+        for field in ("model_registry_name", "model_hf_name"):
+            if not isinstance(runtime.get(field), str) or not str(
+                runtime.get(field)
+            ).strip():
+                collector.add(
+                    "inference_runtime_invalid",
+                    f"inference_runtime.{field} must be a nonblank string; "
+                    f"observed {runtime.get(field)!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                )
+        model_revision = runtime.get("model_revision")
+        if model_revision is not None and (
+            not isinstance(model_revision, str) or not model_revision.strip()
+        ):
+            collector.add(
+                "inference_runtime_invalid",
+                "inference_runtime.model_revision must be a nonblank string "
+                f"or null; observed {model_revision!r}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        if runtime.get("model_hf_name") != summary.get("model_name") or (
+            runtime.get("model_revision") != summary.get("model_revision")
+        ):
+            collector.add(
+                "inference_runtime_model_identity_mismatch",
+                "runtime model identity/revision does not match the stage summary",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        for field in ("seed", "consistency_runs"):
+            value = runtime.get(field)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                collector.add(
+                    "inference_runtime_invalid",
+                    f"inference_runtime.{field} must be a nonnegative integer; "
+                    f"observed {value!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                )
+        if runtime.get("consistency_schedule") not in {"all", "extremes"}:
+            collector.add(
+                "inference_runtime_invalid",
+                "inference_runtime.consistency_schedule must be all or extremes",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        sampling_temperature = runtime.get("sampling_temperature")
+        if (
+            not isinstance(sampling_temperature, (int, float))
+            or isinstance(sampling_temperature, bool)
+            or not math.isfinite(float(sampling_temperature))
+            or float(sampling_temperature) < 0.0
+        ):
+            collector.add(
+                "inference_runtime_invalid",
+                "inference_runtime.sampling_temperature must be finite and "
+                f"nonnegative; observed {sampling_temperature!r}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        if not isinstance(runtime.get("include_verbalized_confidence"), bool):
+            collector.add(
+                "inference_runtime_invalid",
+                "inference_runtime.include_verbalized_confidence must be boolean",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+        for field in ("tensor_parallel_size", "max_model_len", "batch_size"):
+            value = runtime.get(field)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 1
+            ):
+                collector.add(
+                    "inference_runtime_invalid",
+                    f"inference_runtime.{field} must be a positive integer; "
+                    f"observed {value!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                )
+
+        for field in ("max_num_batched_tokens", "max_num_seqs"):
+            value = runtime.get(field)
+            if value is not None and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 1
+            ):
+                collector.add(
+                    "inference_runtime_invalid",
+                    f"inference_runtime.{field} must be null or a positive "
+                    f"integer; observed {value!r}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                )
+
+        utilization = runtime.get("gpu_memory_utilization")
+        if (
+            not isinstance(utilization, (int, float))
+            or isinstance(utilization, bool)
+            or not math.isfinite(float(utilization))
+            or not 0.0 < float(utilization) <= 1.0
+        ):
+            collector.add(
+                "inference_runtime_invalid",
+                "inference_runtime.gpu_memory_utilization must be finite and "
+                f"in (0, 1]; observed {utilization!r}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+
+        dtype = runtime.get("dtype")
+        if not isinstance(dtype, str) or not dtype.strip():
+            collector.add(
+                "inference_runtime_invalid",
+                "inference_runtime.dtype must be a nonblank string; "
+                f"observed {dtype!r}",
+                artifact_dir=artifact_dir,
+                stage=stage,
+            )
+
+        row_groups = (
+            ("raw metadata", raw_rows[stage], True),
+            ("flat score", score_rows[stage], False),
+            ("pair summary", pair_rows[stage], False),
+        )
+        for group_name, rows, nested in row_groups:
+            for row in rows:
+                container = row.get("metadata") if nested else row
+                container = (
+                    container if isinstance(container, Mapping) else {}
+                )
+                observed_runtime = container.get("inference_runtime")
+                if observed_runtime != runtime:
+                    collector.add(
+                        "inference_runtime_provenance_mismatch",
+                        f"{group_name} inference_runtime is "
+                        f"{observed_runtime!r}; expected {runtime!r}",
+                        artifact_dir=artifact_dir,
+                        stage=stage,
+                        record_id=(
+                            str(row.get("record_id"))
+                            if row.get("record_id") is not None
+                            else None
+                        ),
+                    )
+
+    if set(stages) == {"stage_a", "stage_b"} and set(runtimes) == {
+        "stage_a",
+        "stage_b",
+    } and (
+        runtimes["stage_a"] != runtimes["stage_b"]
+    ):
+        collector.add(
+            "cross_stage_inference_runtime_mismatch",
+            "Stage A and Stage B inference_runtime mappings differ: "
+            f"stage_a={runtimes['stage_a']!r}, "
+            f"stage_b={runtimes['stage_b']!r}",
+            artifact_dir=artifact_dir,
+        )
+    return runtime_sha256_by_stage
 
 
 def _validate_scheduler_provenance(
@@ -1789,55 +2398,221 @@ def _normalized_grid(
     return frozenset(cells)
 
 
+def _validate_stage_artifact_layers(
+    *,
+    stage: StageName,
+    raw_rows: Sequence[Mapping[str, Any]],
+    score_rows: Sequence[Mapping[str, Any]],
+    pair_rows: Sequence[Mapping[str, Any]],
+    stage_summary: Mapping[str, Any],
+    artifact_dir: Path,
+    collector: IssueCollector,
+) -> None:
+    _validate_flat_scores(
+        raw_rows,
+        score_rows,
+        collector=collector,
+        artifact_dir=artifact_dir,
+        stage=stage,
+    )
+    if len(score_rows) != len(raw_rows):
+        collector.add(
+            "flat_score_count_mismatch",
+            f"{stage} has {len(score_rows)} flat rows and {len(raw_rows)} raw rows",
+            artifact_dir=artifact_dir,
+            stage=stage,
+        )
+    _validate_pair_summaries(
+        raw_rows,
+        pair_rows,
+        collector=collector,
+        artifact_dir=artifact_dir,
+        stage=stage,
+    )
+    _validate_stage_summary(
+        stage_summary,
+        expected_records=len(raw_rows),
+        collector=collector,
+        artifact_dir=artifact_dir,
+        stage=stage,
+    )
+    _validate_scheduler_provenance(
+        raw_rows,
+        score_rows,
+        pair_rows,
+        stage_summary,
+        collector=collector,
+        artifact_dir=artifact_dir,
+        stage=stage,
+    )
+    _validate_logprobs_mode_provenance(
+        raw_rows,
+        score_rows,
+        pair_rows,
+        stage_summary,
+        collector=collector,
+        artifact_dir=artifact_dir,
+        stage=stage,
+    )
+    _validate_verdict_token_contract_provenance(
+        raw_rows,
+        score_rows,
+        pair_rows,
+        stage_summary,
+        collector=collector,
+        artifact_dir=artifact_dir,
+        stage=stage,
+    )
+    _validate_verbalized_status_summary(
+        raw_rows,
+        stage_summary,
+        collector=collector,
+        artifact_dir=artifact_dir,
+        stage=stage,
+    )
+
+
 def _validate_artifact_dir(
     artifact_dir: Path,
     *,
     source_csv: Path,
     input_file_hash: str,
     source_pairs: Sequence[SourcePair],
+    validation_scope: ValidationScope,
     consistency_runs: int,
     consistency_schedule: Literal["all", "extremes"],
     sampling_temperature: float,
     dataset_split: str | None,
+    expected_stage_b_routing_split: StageBRoutingSplit | None,
+    require_inference_runtime_contract: bool,
+    expected_inference_runtime_sha256: str | None,
     min_verbalized_availability: float,
     collector: IssueCollector,
 ) -> ArtifactResult:
+    stages: tuple[StageName, ...] = (
+        ("stage_a",) if validation_scope == "stage_a" else ("stage_a", "stage_b")
+    )
+    layout = _artifact_layout(
+        artifact_dir,
+        stages=stages,
+        collector=collector,
+    )
     raw_rows = {
         stage: _read_jsonl(
-            artifact_dir / filename,
+            layout.stage_dirs[stage] / RAW_FILENAMES[stage],
             collector=collector,
             artifact_dir=artifact_dir,
             stage=stage,
         )
-        for stage, filename in RAW_FILENAMES.items()
+        for stage in stages
     }
     score_rows = {
         stage: _read_jsonl(
-            artifact_dir / SCORE_FILENAMES[stage],
+            layout.stage_dirs[stage] / SCORE_FILENAMES[stage],
             collector=collector,
             artifact_dir=artifact_dir,
             stage=stage,
         )
-        for stage in ("stage_a", "stage_b")
+        for stage in stages
     }
     pair_rows = {
         stage: _read_jsonl(
-            artifact_dir / PAIR_SUMMARY_FILENAMES[stage],
+            layout.stage_dirs[stage] / PAIR_SUMMARY_FILENAMES[stage],
             collector=collector,
             artifact_dir=artifact_dir,
             stage=stage,
         )
-        for stage in ("stage_a", "stage_b")
+        for stage in stages
     }
     stage_summaries = {
         stage: _read_json_object(
-            artifact_dir / STAGE_SUMMARY_FILENAMES[stage],
+            layout.stage_dirs[stage] / STAGE_SUMMARY_FILENAMES[stage],
             collector=collector,
             artifact_dir=artifact_dir,
             stage=stage,
         )
-        for stage in ("stage_a", "stage_b")
+        for stage in stages
     }
+    stage_b_routing_split: StageBRoutingSplit | None = None
+    effective_stage_b_routing_split: StageBRoutingSplit | None = None
+    if validation_scope == "both":
+        stage_b_routing_split = _declared_stage_b_routing_split(
+            stage_summaries["stage_b"],
+            collector=collector,
+            artifact_dir=artifact_dir,
+        )
+        if (
+            expected_stage_b_routing_split is not None
+            and stage_b_routing_split != expected_stage_b_routing_split
+        ):
+            collector.add(
+                "stage_b_routing_split_mismatch",
+                f"declared Stage B routing split is {stage_b_routing_split!r}; "
+                f"expected {expected_stage_b_routing_split!r}",
+                artifact_dir=artifact_dir,
+                stage="stage_b",
+            )
+        effective_stage_b_routing_split = (
+            expected_stage_b_routing_split or stage_b_routing_split
+        )
+    runtime_sha256_by_stage = _validate_inference_runtime_contract(
+        raw_rows,
+        score_rows,
+        pair_rows,
+        stage_summaries,
+        stages=stages,
+        required=require_inference_runtime_contract,
+        expected_sha256=expected_inference_runtime_sha256,
+        collector=collector,
+        artifact_dir=artifact_dir,
+    )
+    effective_stage_b_source_pair_count = (
+        sum(
+            effective_stage_b_routing_split == "all"
+            or str(
+                source.examples_by_ordering[
+                    PairOrdering.AB.value
+                ].metadata.get("routing_split", "")
+            ).strip().lower()
+            == effective_stage_b_routing_split
+            for source in source_pairs
+        )
+        if validation_scope == "both"
+        else 0
+    )
+    if validation_scope == "both" and expected_stage_b_routing_split is not None:
+        expected_source_pairs = len(source_pairs)
+        for stage in stages:
+            observed_source_pairs = stage_summaries[stage].get("source_pairs")
+            if (
+                not isinstance(observed_source_pairs, int)
+                or isinstance(observed_source_pairs, bool)
+                or observed_source_pairs != expected_source_pairs
+            ):
+                collector.add(
+                    "stage_summary_source_pairs_mismatch",
+                    f"stage summary source_pairs is {observed_source_pairs!r}; "
+                    f"expected {expected_source_pairs}",
+                    artifact_dir=artifact_dir,
+                    stage=stage,
+                )
+        observed_stage_b_source_pairs = stage_summaries["stage_b"].get(
+            "stage_b_source_pairs"
+        )
+        if (
+            not isinstance(observed_stage_b_source_pairs, int)
+            or isinstance(observed_stage_b_source_pairs, bool)
+            or observed_stage_b_source_pairs
+            != effective_stage_b_source_pair_count
+        ):
+            collector.add(
+                "stage_b_source_pairs_mismatch",
+                "Stage B summary stage_b_source_pairs is "
+                f"{observed_stage_b_source_pairs!r}; expected "
+                f"{effective_stage_b_source_pair_count}",
+                artifact_dir=artifact_dir,
+                stage="stage_b",
+            )
     _validate_global_uniqueness(
         raw_rows,
         raw=True,
@@ -1885,10 +2660,10 @@ def _validate_artifact_dir(
             artifact_dir=artifact_dir,
             stage=stage,
         )
-        for stage in ("stage_a", "stage_b")
+        for stage in stages
     }
     if not model_name:
-        for stage in ("stage_a", "stage_b"):
+        for stage in stages:
             _validate_flat_scores(
                 raw_rows[stage],
                 score_rows[stage],
@@ -1947,9 +2722,21 @@ def _validate_artifact_dir(
         return ArtifactResult(
             report={
                 "artifact_dir": str(artifact_dir),
+                "artifact_layout": layout.kind,
+                "stage_dirs": {
+                    stage: str(layout.stage_dirs[stage]) for stage in stages
+                },
+                "validation_scope": validation_scope,
                 "model_name": None,
                 "model_revision": revision,
                 "dataset_split": effective_dataset_split,
+                "stage_b_routing_split": stage_b_routing_split,
+                "expected_stage_b_routing_split": (
+                    expected_stage_b_routing_split
+                ),
+                "effective_stage_b_routing_split": (
+                    effective_stage_b_routing_split
+                ),
                 "verbalized_availability": verbalized_availability,
                 "counts": {
                     "source_pairs": len(source_pairs),
@@ -1957,15 +2744,23 @@ def _validate_artifact_dir(
                     "stage_a_raw": len(raw_rows["stage_a"]),
                     "stage_a_flat": len(score_rows["stage_a"]),
                     "stage_a_pair_summary": len(pair_rows["stage_a"]),
-                    "stage_b_expected": 32 * len(source_pairs),
-                    "stage_b_raw": len(raw_rows["stage_b"]),
-                    "stage_b_flat": len(score_rows["stage_b"]),
-                    "stage_b_pair_summary": len(pair_rows["stage_b"]),
+                    **(
+                        {
+                            "stage_b_expected": (
+                                32 * effective_stage_b_source_pair_count
+                            ),
+                            "stage_b_raw": len(raw_rows["stage_b"]),
+                            "stage_b_flat": len(score_rows["stage_b"]),
+                            "stage_b_pair_summary": len(pair_rows["stage_b"]),
+                        }
+                        if validation_scope == "both"
+                        else {}
+                    ),
                 },
             },
             grids={
                 stage: _normalized_grid(raw_rows[stage])
-                for stage in ("stage_a", "stage_b")
+                for stage in stages
             },
         )
 
@@ -2012,9 +2807,63 @@ def _validate_artifact_dir(
             stage="stage_a",
         )
 
-    expected_b_grid = _stage_b_grid(expected_a)
+    if validation_scope == "stage_a":
+        _validate_stage_artifact_layers(
+            stage="stage_a",
+            raw_rows=raw_rows["stage_a"],
+            score_rows=score_rows["stage_a"],
+            pair_rows=pair_rows["stage_a"],
+            stage_summary=stage_summaries["stage_a"],
+            artifact_dir=artifact_dir,
+            collector=collector,
+        )
+        return ArtifactResult(
+            report={
+                "artifact_dir": str(artifact_dir),
+                "artifact_layout": layout.kind,
+                "stage_dirs": {
+                    "stage_a": str(layout.stage_dirs["stage_a"]),
+                },
+                "validation_scope": validation_scope,
+                "model_name": model_name or None,
+                "model_revision": revision,
+                "dataset_split": effective_dataset_split,
+                "stage_b_routing_split": None,
+                "expected_stage_b_routing_split": (
+                    expected_stage_b_routing_split
+                ),
+                "effective_stage_b_routing_split": None,
+                "inference_runtime_sha256_by_stage": runtime_sha256_by_stage,
+                "verbalized_availability": verbalized_availability,
+                "counts": {
+                    "source_pairs": len(source_pairs),
+                    "stage_a_expected": len(expected_a),
+                    "stage_a_raw": len(raw_rows["stage_a"]),
+                    "stage_a_flat": len(score_rows["stage_a"]),
+                    "stage_a_pair_summary": len(pair_rows["stage_a"]),
+                },
+            },
+            grids={"stage_a": _normalized_grid(raw_rows["stage_a"])},
+        )
+
+    expected_stage_b_a = {
+        key: planned
+        for key, planned in expected_a.items()
+        if effective_stage_b_routing_split == "all"
+        or str(examples_a[key].metadata.get("routing_split", "")).strip().lower()
+        == effective_stage_b_routing_split
+    }
+    if not expected_stage_b_a:
+        collector.add(
+            "stage_b_routing_split_empty",
+            "no source pairs use routing_split="
+            f"{effective_stage_b_routing_split!r}",
+            artifact_dir=artifact_dir,
+            stage="stage_b",
+        )
+    expected_b_grid = _stage_b_grid(expected_stage_b_a)
     expected_b = _stage_b_expectations(
-        expected_a,
+        expected_stage_b_a,
         stage_a_index,
         collector=collector,
         artifact_dir=artifact_dir,
@@ -2052,7 +2901,7 @@ def _validate_artifact_dir(
         if count != 32
     }
     expected_identities = {
-        planned.pair_identity_key for planned in expected_a.values()
+        planned.pair_identity_key for planned in expected_stage_b_a.values()
     }
     for missing_identity in expected_identities - set(identity_counts):
         bad_identity_counts[missing_identity] = 0
@@ -2105,76 +2954,31 @@ def _validate_artifact_dir(
                 record_id=row.get("record_id"),
             )
 
-    for stage in ("stage_a", "stage_b"):
-        _validate_flat_scores(
-            raw_rows[stage],
-            score_rows[stage],
-            collector=collector,
-            artifact_dir=artifact_dir,
+    for stage in stages:
+        _validate_stage_artifact_layers(
             stage=stage,
-        )
-        if len(score_rows[stage]) != len(raw_rows[stage]):
-            collector.add(
-                "flat_score_count_mismatch",
-                f"{stage} has {len(score_rows[stage])} flat rows and "
-                f"{len(raw_rows[stage])} raw rows",
-                artifact_dir=artifact_dir,
-                stage=stage,
-            )
-        _validate_pair_summaries(
-            raw_rows[stage],
-            pair_rows[stage],
-            collector=collector,
+            raw_rows=raw_rows[stage],
+            score_rows=score_rows[stage],
+            pair_rows=pair_rows[stage],
+            stage_summary=stage_summaries[stage],
             artifact_dir=artifact_dir,
-            stage=stage,
-        )
-        _validate_stage_summary(
-            stage_summaries[stage],
-            expected_records=len(raw_rows[stage]),
             collector=collector,
-            artifact_dir=artifact_dir,
-            stage=stage,
-        )
-        _validate_scheduler_provenance(
-            raw_rows[stage],
-            score_rows[stage],
-            pair_rows[stage],
-            stage_summaries[stage],
-            collector=collector,
-            artifact_dir=artifact_dir,
-            stage=stage,
-        )
-        _validate_logprobs_mode_provenance(
-            raw_rows[stage],
-            score_rows[stage],
-            pair_rows[stage],
-            stage_summaries[stage],
-            collector=collector,
-            artifact_dir=artifact_dir,
-            stage=stage,
-        )
-        _validate_verdict_token_contract_provenance(
-            raw_rows[stage],
-            score_rows[stage],
-            pair_rows[stage],
-            stage_summaries[stage],
-            collector=collector,
-            artifact_dir=artifact_dir,
-            stage=stage,
-        )
-        _validate_verbalized_status_summary(
-            raw_rows[stage],
-            stage_summaries[stage],
-            collector=collector,
-            artifact_dir=artifact_dir,
-            stage=stage,
         )
 
     directory_report = {
         "artifact_dir": str(artifact_dir),
+        "artifact_layout": layout.kind,
+        "stage_dirs": {
+            stage: str(layout.stage_dirs[stage]) for stage in stages
+        },
+        "validation_scope": validation_scope,
         "model_name": model_name or None,
         "model_revision": revision,
         "dataset_split": effective_dataset_split,
+        "stage_b_routing_split": stage_b_routing_split,
+        "expected_stage_b_routing_split": expected_stage_b_routing_split,
+        "effective_stage_b_routing_split": effective_stage_b_routing_split,
+        "inference_runtime_sha256_by_stage": runtime_sha256_by_stage,
         "verbalized_availability": verbalized_availability,
         "counts": {
             "source_pairs": len(source_pairs),
@@ -2201,6 +3005,7 @@ def validate_artifact_directories(
     *,
     source_csv: Path,
     artifact_dirs: Sequence[Path],
+    validation_scope: ValidationScope = "both",
     consistency_runs: int,
     consistency_schedule: Literal["all", "extremes"],
     sampling_temperature: float = 0.7,
@@ -2208,11 +3013,17 @@ def validate_artifact_directories(
     limit: int | None = None,
     max_reported_errors: int = 50,
     min_verbalized_availability: float = 0.99,
+    require_question_disjoint_routing: bool = False,
+    expected_stage_b_routing_split: StageBRoutingSplit | None = None,
+    expected_question_routing_sha256: str | None = None,
+    expected_inference_runtime_sha256: str | None = None,
 ) -> dict[str, Any]:
     if not source_csv.is_file():
         raise FileNotFoundError(source_csv)
     if not artifact_dirs:
         raise ValueError("at least one artifact directory is required")
+    if validation_scope not in {"both", "stage_a"}:
+        raise ValueError("validation_scope must be 'both' or 'stage_a'")
     if consistency_runs < 0:
         raise ValueError("consistency_runs must be nonnegative")
     if consistency_schedule not in {"all", "extremes"}:
@@ -2228,6 +3039,23 @@ def validate_artifact_directories(
         raise ValueError(
             "min_verbalized_availability must be finite and in [0, 1]"
         )
+    if expected_stage_b_routing_split not in {
+        None,
+        "all",
+        "calibration",
+        "test",
+    }:
+        raise ValueError(
+            "expected_stage_b_routing_split must be all/calibration/test or null"
+        )
+    normalized_expected_routing_sha256 = _normalize_expected_sha256(
+        expected_question_routing_sha256
+    )
+    normalized_expected_runtime_sha256 = (
+        _normalize_expected_inference_runtime_sha256(
+            expected_inference_runtime_sha256
+        )
+    )
 
     collector = IssueCollector(max_reported=max_reported_errors)
     source_hash = file_sha256(source_csv)
@@ -2236,16 +3064,37 @@ def validate_artifact_directories(
         input_file_hash=source_hash,
         limit=limit,
     )
+    question_routing = _question_routing_report(
+        source_csv,
+        source_pairs,
+        required=(
+            require_question_disjoint_routing
+            or normalized_expected_routing_sha256 is not None
+        ),
+        expected_assignment_sha256=normalized_expected_routing_sha256,
+        collector=collector,
+    )
     results = [
         _validate_artifact_dir(
             directory,
             source_csv=source_csv,
             input_file_hash=source_hash,
             source_pairs=source_pairs,
+            validation_scope=validation_scope,
             consistency_runs=consistency_runs,
             consistency_schedule=consistency_schedule,
             sampling_temperature=sampling_temperature,
             dataset_split=dataset_split,
+            expected_stage_b_routing_split=expected_stage_b_routing_split,
+            require_inference_runtime_contract=(
+                require_question_disjoint_routing
+                or expected_stage_b_routing_split is not None
+                or normalized_expected_routing_sha256 is not None
+                or normalized_expected_runtime_sha256 is not None
+            ),
+            expected_inference_runtime_sha256=(
+                normalized_expected_runtime_sha256
+            ),
             min_verbalized_availability=min_verbalized_availability,
             collector=collector,
         )
@@ -2256,7 +3105,12 @@ def validate_artifact_directories(
         reference = results[0]
         reference_dir = artifact_dirs[0]
         for directory, result in zip(artifact_dirs[1:], results[1:], strict=True):
-            for stage in ("stage_a", "stage_b"):
+            stages: tuple[StageName, ...] = (
+                ("stage_a",)
+                if validation_scope == "stage_a"
+                else ("stage_a", "stage_b")
+            )
+            for stage in stages:
                 if result.grids[stage] == reference.grids[stage]:
                     continue
                 missing = reference.grids[stage] - result.grids[stage]
@@ -2279,6 +3133,7 @@ def validate_artifact_directories(
             "limit": limit,
         },
         "design": {
+            "validation_scope": validation_scope,
             "stage_a_records_per_pair": 2,
             "stage_b_records_per_pair": 32,
             "consistency_runs": consistency_runs,
@@ -2290,6 +3145,16 @@ def validate_artifact_directories(
                 VERBALIZED_OUTPUT_PARSER_VERSION
             ),
             "min_verbalized_availability": min_verbalized_availability,
+            "expected_stage_b_routing_split": (
+                expected_stage_b_routing_split
+            ),
+            "expected_question_routing_sha256": (
+                normalized_expected_routing_sha256
+            ),
+            "expected_inference_runtime_sha256": (
+                normalized_expected_runtime_sha256
+            ),
+            "question_routing": question_routing,
         },
         "artifacts": [result.report for result in results],
         **issue_summary,
@@ -2299,8 +3164,9 @@ def validate_artifact_directories(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate Silent Bias Stage A/B raw and flat artifacts against the "
-            "source CSV and experimental grid."
+            "Validate Silent Bias artifacts against the source CSV and "
+            "experimental grid. Artifact roots may contain co-located files "
+            "or separate stage_a/stage_b child directories."
         )
     )
     parser.add_argument("--source-csv", type=Path, required=True)
@@ -2310,7 +3176,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         required=True,
         dest="artifact_dirs",
-        help="Model artifact directory; repeat to check cross-model grid identity.",
+        help=(
+            "Model artifact directory or rendered run root; repeat to check "
+            "cross-model grid identity."
+        ),
+    )
+    parser.add_argument(
+        "--stage-a-only",
+        action="store_true",
+        help=(
+            "Validate only the complete Stage A grid and its artifact layers; "
+            "use as a gate before starting Stage B."
+        ),
     )
     parser.add_argument("--consistency-runs", type=int, required=True)
     parser.add_argument(
@@ -2334,6 +3211,39 @@ def build_parser() -> argparse.ArgumentParser:
             "per stage (default: 0.99)."
         ),
     )
+    parser.add_argument(
+        "--require-question-disjoint-routing",
+        action="store_true",
+        help=(
+            "Require every question ID to belong wholly to calibration or test, "
+            "with both splits represented."
+        ),
+    )
+    parser.add_argument(
+        "--expected-stage-b-routing-split",
+        choices=("all", "calibration", "test"),
+        help=(
+            "Optional expected Stage B routing scope. Full validation checks "
+            "the declared scope and Stage B grid; Stage-A-only validation "
+            "records the planned scope without claiming Stage B was checked."
+        ),
+    )
+    parser.add_argument(
+        "--expected-question-routing-sha256",
+        "--expected-routing-assignment-sha256",
+        dest="expected_question_routing_sha256",
+        help=(
+            "Optional expected SHA-256 of the full canonical question-routing "
+            "assignment."
+        ),
+    )
+    parser.add_argument(
+        "--expected-inference-runtime-sha256",
+        help=(
+            "Optional expected SHA-256 of the canonical controlled inference-"
+            "runtime mapping."
+        ),
+    )
     parser.add_argument("--report-path", type=Path)
     return parser
 
@@ -2344,6 +3254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = validate_artifact_directories(
             source_csv=args.source_csv,
             artifact_dirs=args.artifact_dirs,
+            validation_scope=("stage_a" if args.stage_a_only else "both"),
             consistency_runs=args.consistency_runs,
             consistency_schedule=args.consistency_schedule,
             sampling_temperature=args.sampling_temperature,
@@ -2351,6 +3262,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             limit=args.limit,
             max_reported_errors=args.max_reported_errors,
             min_verbalized_availability=args.min_verbalized_availability,
+            require_question_disjoint_routing=(
+                args.require_question_disjoint_routing
+            ),
+            expected_stage_b_routing_split=(
+                args.expected_stage_b_routing_split
+            ),
+            expected_question_routing_sha256=(
+                args.expected_question_routing_sha256
+            ),
+            expected_inference_runtime_sha256=(
+                args.expected_inference_runtime_sha256
+            ),
         )
     except (FileNotFoundError, TypeError, ValueError) as exc:
         report = {

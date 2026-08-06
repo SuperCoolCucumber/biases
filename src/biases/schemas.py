@@ -35,6 +35,14 @@ class HumanCueDirection(str, Enum):
     NONE = "none"
 
 
+class CueReferenceKind(str, Enum):
+    """Provenance of the binary reference used to aim a social cue."""
+
+    MODEL_CLEAN_VERDICT = "model_clean_verdict"
+    HUMAN_LABEL_FALLBACK = "human_label_fallback"
+    DETERMINISTIC_FALLBACK = "deterministic_fallback"
+
+
 class VerdictLabel(str, Enum):
     A = "A"
     B = "B"
@@ -85,6 +93,7 @@ class BiasCondition(BaseModel):
     direction_relative_human: HumanCueDirection | None = None
     clean_tie: bool | None = None
     clean_record_id: str | None = None
+    reference_kind: CueReferenceKind | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

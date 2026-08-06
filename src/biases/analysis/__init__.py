@@ -39,6 +39,18 @@ from biases.analysis.resampling import (
     cluster_resamples,
     cluster_sign_flip_p_value,
 )
+from biases.analysis.repeatability import (
+    OrderingRepeatabilityScores,
+    VoteDistribution,
+    anchor_reproducibility,
+    degree_matrix_agreement,
+    frequency_semantic_entropy_confidence,
+    independent_draw_agreement,
+    jensen_shannon_similarity as vote_jensen_shannon_similarity,
+    ordering_repeatability_scores,
+    total_variation_similarity,
+    vote_distribution,
+)
 from biases.analysis.rq1 import (
     PairedShift,
     SusceptibilityAUC,
@@ -159,4 +171,14 @@ __all__ = [
     "spec_sha256",
     "swap_average_pair",
     "swap_average_records",
+    "OrderingRepeatabilityScores",
+    "VoteDistribution",
+    "anchor_reproducibility",
+    "degree_matrix_agreement",
+    "frequency_semantic_entropy_confidence",
+    "independent_draw_agreement",
+    "ordering_repeatability_scores",
+    "total_variation_similarity",
+    "vote_distribution",
+    "vote_jensen_shannon_similarity",
 ]

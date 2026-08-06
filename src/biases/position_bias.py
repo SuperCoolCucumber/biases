@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import hashlib
 import json
 import math
 import os
@@ -46,6 +47,7 @@ DEFAULT_MAX_MODEL_LEN = 8192
 JUDGE_OUTPUT_PARSER_VERSION = "strict_v3"
 VERBALIZED_OUTPUT_PARSER_VERSION = "strict_v3"
 CONSTRAINED_LOGPROBS_MODE = "processed_logprobs"
+POSITION_PAIR_ELIGIBILITY_CONTRACT = "position_pair_loader_v1"
 VerbalizedParseStatus = Literal[
     "parsed",
     "missing",
@@ -65,6 +67,35 @@ class PositionPair:
     pair_id: str
     original: JudgeExample
     swapped: JudgeExample
+
+
+@dataclass(frozen=True, slots=True)
+class PositionPairEligibilityAudit:
+    """Deterministic account of source rows accepted by the pair loader."""
+
+    raw_row_count: int
+    eligible_pair_count: int
+    skipped_row_count: int
+    skipped_reason_counts: dict[str, int]
+    routing_counts: dict[str, dict[str, int]]
+    eligibility_sha256: str
+    skipped_rows: tuple[dict[str, Any], ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "eligibility_contract": POSITION_PAIR_ELIGIBILITY_CONTRACT,
+            "raw_row_count": self.raw_row_count,
+            "eligible_pair_count": self.eligible_pair_count,
+            "skipped_row_count": self.skipped_row_count,
+            "skipped_reason_counts": dict(self.skipped_reason_counts),
+            "routing_counts": {
+                name: dict(counts)
+                for name, counts in self.routing_counts.items()
+            },
+            "eligibility_sha256": self.eligibility_sha256,
+            "skipped_rows": [dict(row) for row in self.skipped_rows],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,7 +361,33 @@ def _swap_label(label: VerdictLabel | None) -> VerdictLabel | None:
     return label
 
 
-def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[PositionPair]:
+def _eligibility_sha256(rows: list[dict[str, Any]]) -> str:
+    payload = json.dumps(
+        rows,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _routing_bucket(raw_routing_split: str | None) -> str:
+    normalized = str(raw_routing_split or "").strip().lower()
+    return normalized or "missing"
+
+
+def load_position_pairs_with_eligibility(
+    csv_path: Path,
+    limit: int | None = None,
+) -> tuple[list[PositionPair], PositionPairEligibilityAudit]:
+    """Load eligible pairs and report every examined row's eligibility.
+
+    The filtering contract is intentionally the same as ``load_position_pairs``:
+    a row is skipped only when its winner is missing/unsupported or either
+    extracted response is empty. With ``limit`` set, counts cover only the rows
+    examined while collecting that many eligible pairs.
+    """
+
     with csv_path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         fieldnames = reader.fieldnames or []
@@ -430,13 +487,27 @@ def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[Positi
             None,
         )
 
-        if prompt_column is None and (conversation_a_column is None or conversation_b_column is None):
+        flat_schema_complete = all(
+            column is not None
+            for column in (prompt_column, response_a_column, response_b_column)
+        )
+        conversation_schema_complete = all(
+            column is not None
+            for column in (conversation_a_column, conversation_b_column)
+        )
+        if not flat_schema_complete and not conversation_schema_complete:
             raise KeyError(
                 "CSV must contain either prompt/response_a/response_b columns or "
                 "conversation_a/conversation_b columns."
             )
 
         pairs: list[PositionPair] = []
+        eligibility_rows: list[dict[str, Any]] = []
+        skipped_rows: list[dict[str, Any]] = []
+        skipped_reason_counts: Counter[str] = Counter()
+        raw_routing_counts: Counter[str] = Counter()
+        eligible_routing_counts: Counter[str] = Counter()
+        skipped_routing_counts: Counter[str] = Counter()
         for index, row in enumerate(reader):
             if limit is not None and len(pairs) >= limit:
                 break
@@ -444,16 +515,28 @@ def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[Positi
             base_id = row[id_column].strip() or f"row-{index}"
             turn_value = row[turn_column].strip() if turn_column and row.get(turn_column) else ""
             pair_id = f"{base_id}:turn-{turn_value}" if turn_value else base_id
+            routing_split = (
+                row[routing_split_column].strip()
+                if routing_split_column and row.get(routing_split_column)
+                else None
+            )
+            routing_bucket = _routing_bucket(routing_split)
+            raw_routing_counts[routing_bucket] += 1
 
-            if prompt_column is not None and response_a_column is not None and response_b_column is not None:
+            if flat_schema_complete:
+                assert prompt_column is not None
+                assert response_a_column is not None
+                assert response_b_column is not None
                 prompt_messages = _parse_prompt_messages(row[prompt_column])
                 response_a = row[response_a_column].strip()
                 response_b = row[response_b_column].strip()
                 extraction_mode = "flat_prompt_responses"
                 selected_turn = int(turn_value) if turn_value in {"1", "2"} else None
             else:
-                conversation_a = _parse_conversation(row[conversation_a_column or ""])
-                conversation_b = _parse_conversation(row[conversation_b_column or ""])
+                assert conversation_a_column is not None
+                assert conversation_b_column is not None
+                conversation_a = _parse_conversation(row[conversation_a_column])
+                conversation_b = _parse_conversation(row[conversation_b_column])
                 extraction = _extract_conversation_pair(
                     conversation_a,
                     conversation_b,
@@ -465,17 +548,42 @@ def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[Positi
                 extraction_mode = extraction.mode
                 selected_turn = extraction.selected_turn
 
-            human_winner = _normalize_winner(row[winner_column])
-            if human_winner is None or not response_a or not response_b:
+            raw_winner = row[winner_column].strip()
+            human_winner = _normalize_winner(raw_winner)
+            skip_reasons: list[str] = []
+            if not raw_winner:
+                skip_reasons.append("missing_winner")
+            elif human_winner is None:
+                skip_reasons.append("invalid_winner")
+            if not response_a:
+                skip_reasons.append("missing_response_a")
+            if not response_b:
+                skip_reasons.append("missing_response_b")
+
+            eligibility_entry = {
+                "source_row_index": index,
+                "pair_id": pair_id,
+                "routing_split": routing_bucket,
+                "eligible": not skip_reasons,
+                "skip_reasons": list(skip_reasons),
+            }
+            eligibility_rows.append(eligibility_entry)
+            if skip_reasons:
+                skipped_reason_counts.update(skip_reasons)
+                skipped_routing_counts[routing_bucket] += 1
+                skipped_rows.append(
+                    {
+                        "source_row_index": index,
+                        "pair_id": pair_id,
+                        "routing_split": routing_bucket,
+                        "skip_reasons": list(skip_reasons),
+                    }
+                )
                 continue
+            eligible_routing_counts[routing_bucket] += 1
 
             model_a = row[model_a_column].strip() if model_a_column and row.get(model_a_column) else None
             model_b = row[model_b_column].strip() if model_b_column and row.get(model_b_column) else None
-            routing_split = (
-                row[routing_split_column].strip()
-                if routing_split_column and row.get(routing_split_column)
-                else None
-            )
 
             base_metadata = {
                 "pair_id": pair_id,
@@ -545,6 +653,28 @@ def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[Positi
             )
             pairs.append(PositionPair(pair_id=pair_id, original=original, swapped=swapped))
 
+    raw_row_count = len(eligibility_rows)
+    skipped_row_count = len(skipped_rows)
+    if raw_row_count != len(pairs) + skipped_row_count:
+        raise AssertionError("pair-loader eligibility accounting is inconsistent")
+    audit = PositionPairEligibilityAudit(
+        raw_row_count=raw_row_count,
+        eligible_pair_count=len(pairs),
+        skipped_row_count=skipped_row_count,
+        skipped_reason_counts=dict(sorted(skipped_reason_counts.items())),
+        routing_counts={
+            "raw_rows": dict(sorted(raw_routing_counts.items())),
+            "eligible_pairs": dict(sorted(eligible_routing_counts.items())),
+            "skipped_rows": dict(sorted(skipped_routing_counts.items())),
+        },
+        eligibility_sha256=_eligibility_sha256(eligibility_rows),
+        skipped_rows=tuple(skipped_rows),
+    )
+    return pairs, audit
+
+
+def load_position_pairs(csv_path: Path, limit: int | None = None) -> list[PositionPair]:
+    pairs, _ = load_position_pairs_with_eligibility(csv_path, limit=limit)
     return pairs
 
 
@@ -767,6 +897,8 @@ class VLLMJudge:
         dtype: str = "auto",
         max_num_batched_tokens: int | None = None,
         max_num_seqs: int | None = None,
+        enforce_eager: bool | None = None,
+        disable_custom_all_reduce: bool | None = None,
     ) -> None:
         if LLM is None or SamplingParams is None:
             raise RuntimeError(
@@ -789,21 +921,32 @@ class VLLMJudge:
         self.logprobs_mode = CONSTRAINED_LOGPROBS_MODE
         self.max_num_batched_tokens = max_num_batched_tokens
         self.max_num_seqs = max_num_seqs
-        disable_custom_all_reduce = os.environ.get("VLLM_DISABLE_CUSTOM_ALL_REDUCE", "").lower()
-        disable_custom_all_reduce = disable_custom_all_reduce in {"1", "true", "yes", "on"}
-        enforce_eager = os.environ.get("BIASES_VLLM_ENFORCE_EAGER", "").lower()
-        enforce_eager = enforce_eager in {"1", "true", "yes", "on"}
+        # Explicit scientific-run controls take precedence.  The environment
+        # fallback is retained for legacy callers that have not yet adopted
+        # the frozen runtime contract.
+        if disable_custom_all_reduce is None:
+            disable_custom_all_reduce = os.environ.get(
+                "VLLM_DISABLE_CUSTOM_ALL_REDUCE",
+                "",
+            ).lower() in {"1", "true", "yes", "on"}
+        if enforce_eager is None:
+            enforce_eager = os.environ.get(
+                "BIASES_VLLM_ENFORCE_EAGER",
+                "",
+            ).lower() in {"1", "true", "yes", "on"}
+        self.disable_custom_all_reduce = bool(disable_custom_all_reduce)
+        self.enforce_eager = bool(enforce_eager)
         llm_kwargs: dict[str, Any] = {
             "model": self.model_name,
             "revision": self.profile.revision,
             "tokenizer_revision": self.profile.revision,
             "tensor_parallel_size": tensor_parallel_size,
             "max_model_len": max_model_len,
-            "trust_remote_code": True,
+            "trust_remote_code": self.profile.trust_remote_code,
             "gpu_memory_utilization": gpu_memory_utilization,
             "dtype": dtype,
-            "disable_custom_all_reduce": disable_custom_all_reduce,
-            "enforce_eager": enforce_eager,
+            "disable_custom_all_reduce": self.disable_custom_all_reduce,
+            "enforce_eager": self.enforce_eager,
             "logprobs_mode": self.logprobs_mode,
         }
         if max_num_batched_tokens is not None:
@@ -839,7 +982,18 @@ class VLLMJudge:
         token_ids = self.tokenizer.encode(text, add_special_tokens=False)
         if len(token_ids) != 1:
             return None
-        return int(token_ids[0])
+        token_id = int(token_ids[0])
+        decoded = self.tokenizer.decode(
+            [token_id],
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        if decoded != text:
+            raise RuntimeError(
+                f"Decision surface {text!r} encoded as singleton token ID "
+                f"{token_id}, but that token decoded as {decoded!r}."
+            )
+        return token_id
 
     def _build_decision_label_token_maps(self) -> tuple[dict[str, list[int]], dict[int, str]]:
         label_texts = self.profile.verdict_token_texts

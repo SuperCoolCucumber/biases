@@ -27,6 +27,7 @@ artifacts/
 logs/
 outputs/
 outputs
+output/
 checkpoints/
 models/
 wandb/

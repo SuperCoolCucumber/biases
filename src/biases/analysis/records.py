@@ -130,12 +130,14 @@ class ConditionRecord:
     clean_record_id: str | None
     ordering: str
     model_name: str
+    model_revision: str | None
     routing_split: str | None
     family: str
     direction: str
     dose: float | None
     variant_id: str
     cue_target: str | None
+    reference_kind: str | None
     human_winner: str | None
     verdict: str
     clean_tie: bool
@@ -203,6 +205,13 @@ def record_from_mapping(row: Mapping[str, Any]) -> ConditionRecord:
     cue_target = normalize_label(
         _first(row, "cue_target", ("condition", "cue_target"), ("metadata", "cue_target"))
     )
+    reference_kind_value = _first(
+        row,
+        "reference_kind",
+        ("condition", "reference_kind"),
+        ("condition", "metadata", "reference_kind"),
+        ("metadata", "reference_kind"),
+    )
     consistency_entropy = _first(
         row,
         "consistency_vote_entropy",
@@ -233,6 +242,12 @@ def record_from_mapping(row: Mapping[str, Any]) -> ConditionRecord:
         ),
         ordering=_ordering(row, variant_id, example_id),
         model_name=str(_first(row, "model_name", ("spec", "model_name")) or ""),
+        model_revision=(
+            str(_first(row, "model_revision", ("spec", "model_revision")))
+            if _first(row, "model_revision", ("spec", "model_revision"))
+            is not None
+            else None
+        ),
         routing_split=(
             str(_first(row, "routing_split", ("metadata", "routing_split")))
             if _first(row, "routing_split", ("metadata", "routing_split")) is not None
@@ -243,6 +258,11 @@ def record_from_mapping(row: Mapping[str, Any]) -> ConditionRecord:
         dose=dose,
         variant_id=variant_id,
         cue_target=cue_target,
+        reference_kind=(
+            str(reference_kind_value).strip()
+            if reference_kind_value is not None
+            else None
+        ),
         human_winner=human_winner,
         verdict=verdict,
         clean_tie=(

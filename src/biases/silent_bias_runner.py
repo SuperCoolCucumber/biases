@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import json
 import os
+import platform
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -52,6 +55,7 @@ from biases.utils import ensure_parent, stable_hash, write_jsonl
 
 
 ConsistencySchedule = Literal["all", "extremes"]
+StageBRoutingSplit = Literal["all", "calibration", "test"]
 
 UNCERTAINTY_METHODS = (
     "logit",
@@ -96,6 +100,50 @@ class RunnerPaths:
     pair_summary: Path
     summary: Path
     planning_issues: Path
+
+
+def select_stage_b_clean_summaries(
+    summaries: Sequence[CleanPairSummary],
+    *,
+    routing_split: StageBRoutingSplit,
+) -> tuple[CleanPairSummary, ...]:
+    """Select the clean rows that are eligible to seed Stage B.
+
+    Legacy campaigns use ``all``. A question-disjoint campaign uses ``test``
+    so calibration questions receive clean judgments only and cannot leak into
+    any cued-condition evaluation.
+    """
+
+    if routing_split not in {"all", "calibration", "test"}:
+        raise ValueError(
+            "stage_b_routing_split must be all, calibration, or test"
+        )
+    if routing_split == "all":
+        return tuple(summaries)
+
+    invalid = sorted(
+        {
+            summary.routing_split
+            for summary in summaries
+            if summary.routing_split not in {"calibration", "test"}
+        },
+        key=lambda value: "" if value is None else value,
+    )
+    if invalid:
+        raise ValueError(
+            "Stage A summaries must carry calibration/test routing metadata "
+            f"before Stage B can be filtered; found {invalid!r}"
+        )
+    selected = tuple(
+        summary
+        for summary in summaries
+        if summary.routing_split == routing_split
+    )
+    if not selected:
+        raise ValueError(
+            f"No Stage A summaries use routing_split={routing_split!r}"
+        )
+    return selected
 
 
 def _stage_paths(output_dir: Path, stage: Literal["stage_a", "stage_b"]) -> RunnerPaths:
@@ -266,6 +314,7 @@ def _validate_resume_rows(
     include_verbalized_confidence: bool,
     max_num_batched_tokens: int | None,
     max_num_seqs: int | None,
+    inference_runtime: Mapping[str, Any],
 ) -> None:
     verdict_token_texts, verdict_token_ids = _judge_verdict_token_contract(judge)
     expected = {
@@ -397,6 +446,9 @@ def _validate_resume_rows(
             "max_num_seqs": (
                 "max_num_seqs" in metadata
                 and metadata.get("max_num_seqs") == max_num_seqs
+            ),
+            "inference_runtime": (
+                metadata.get("inference_runtime") == inference_runtime
             ),
             "consistency_runs": spec.get("consistency_runs") == expected_consistency,
             "consistency_schedule": (
@@ -684,6 +736,7 @@ def _evaluate_new_items(
     max_num_batched_tokens: int | None,
     max_num_seqs: int | None,
     batch_size: int,
+    inference_runtime: Mapping[str, Any],
     checkpoint_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     existing_keys = {_condition_key_from_row(row) for row in existing_rows}
@@ -709,6 +762,8 @@ def _evaluate_new_items(
             max_num_batched_tokens=max_num_batched_tokens,
             max_num_seqs=max_num_seqs,
         )
+        for record in records:
+            record.metadata["inference_runtime"] = dict(inference_runtime)
         batch_rows = [
             record.model_dump(mode="json") for record in records
         ]
@@ -729,6 +784,7 @@ def _clean_summary_row(record: RunRecord) -> dict[str, Any]:
         "ordering_twin_key": record.ordering_twin_key,
         "ordering": record.condition.ordering,
         "model_name": record.spec.model_name,
+        "model_revision": record.spec.model_revision,
         "input_file_hash": record.input_file_hash,
         "spec_hash": record.spec_hash,
         "question_id": record.question_id,
@@ -755,6 +811,7 @@ def _clean_summary_row(record: RunRecord) -> dict[str, Any]:
         ),
         "max_num_batched_tokens": record.metadata.get("max_num_batched_tokens"),
         "max_num_seqs": record.metadata.get("max_num_seqs"),
+        "inference_runtime": record.metadata.get("inference_runtime"),
         "human_winner": record.metadata.get("human_winner"),
         "clean_verdict": record.verdict,
         "verdict": record.verdict,
@@ -774,6 +831,7 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
         "ordering_twin_key": record.ordering_twin_key,
         "ordering": record.condition.ordering,
         "model_name": record.spec.model_name,
+        "model_revision": record.spec.model_revision,
         "input_file_hash": record.input_file_hash,
         "spec_hash": record.spec_hash,
         "question_id": record.question_id,
@@ -800,6 +858,7 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
         ),
         "max_num_batched_tokens": record.metadata.get("max_num_batched_tokens"),
         "max_num_seqs": record.metadata.get("max_num_seqs"),
+        "inference_runtime": record.metadata.get("inference_runtime"),
         "human_winner": human_winner,
         "clean_verdict": clean_verdict,
         "verdict": record.verdict,
@@ -808,6 +867,7 @@ def _cued_summary_row(record: RunRecord) -> dict[str, Any]:
         "direction_relative_human": record.condition.direction_relative_human,
         "dose": record.condition.dose,
         "cue_target": record.condition.cue_target,
+        "reference_kind": record.condition.reference_kind,
         "clean_tie": record.condition.clean_tie,
         "flip": clean_verdict is not None and record.verdict != clean_verdict,
         "error": human_winner is not None and record.verdict != human_winner,
@@ -825,7 +885,10 @@ def _materialize_derived_outputs(
     uncertainty_rows = [
         {
             **_record_to_uncertainty_row(record),
+            "model_revision": record.spec.model_revision,
             "logprobs_mode": record.spec.logprobs_mode,
+            "inference_runtime": record.metadata.get("inference_runtime"),
+            "reference_kind": record.condition.reference_kind,
         }
         for record in records
     ]
@@ -864,6 +927,8 @@ def _new_vllm_judge(
     dtype: str,
     max_num_batched_tokens: int | None,
     max_num_seqs: int | None,
+    enforce_eager: bool,
+    disable_custom_all_reduce: bool,
 ) -> VLLMJudge:
     return VLLMJudge(
         model_name=model_name,
@@ -873,6 +938,8 @@ def _new_vllm_judge(
         dtype=dtype,
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
+        enforce_eager=enforce_eager,
+        disable_custom_all_reduce=disable_custom_all_reduce,
     )
 
 
@@ -885,6 +952,118 @@ def _vllm_scheduler_provenance(
         "max_num_batched_tokens": max_num_batched_tokens,
         "max_num_seqs": max_num_seqs,
     }
+
+
+def _inference_runtime_provenance(
+    *,
+    model_registry_name: str,
+    model_hf_name: str,
+    model_revision: str | None,
+    tensor_parallel_size: int,
+    max_model_len: int,
+    gpu_memory_utilization: float,
+    dtype: str,
+    batch_size: int,
+    max_num_batched_tokens: int | None,
+    max_num_seqs: int | None,
+    enforce_eager: bool,
+    disable_custom_all_reduce: bool,
+    consistency_runs: int,
+    consistency_schedule: ConsistencySchedule,
+    sampling_temperature: float,
+    include_verbalized_confidence: bool,
+) -> dict[str, Any]:
+    """Return the exact requested inference settings bound to every row."""
+
+    runtime: dict[str, Any] = {
+        "model_registry_name": model_registry_name,
+        "model_hf_name": model_hf_name,
+        "model_revision": model_revision,
+        "tensor_parallel_size": tensor_parallel_size,
+        "max_model_len": max_model_len,
+        "gpu_memory_utilization": gpu_memory_utilization,
+        "dtype": dtype,
+        "batch_size": batch_size,
+        "max_num_batched_tokens": max_num_batched_tokens,
+        "max_num_seqs": max_num_seqs,
+        "enforce_eager": enforce_eager,
+        "disable_custom_all_reduce": disable_custom_all_reduce,
+        "seed": 0,
+        "consistency_runs": consistency_runs,
+        "consistency_schedule": consistency_schedule,
+        "sampling_temperature": sampling_temperature,
+        "include_verbalized_confidence": include_verbalized_confidence,
+        "engine_versions": _engine_versions(),
+    }
+    runtime["runtime_sha256"] = _runtime_sha256(runtime)
+    return runtime
+
+
+def _distribution_version(distribution: str) -> str | None:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _engine_versions() -> dict[str, str | None]:
+    """Return versions that can affect vLLM execution semantics."""
+
+    return {
+        "python": platform.python_version(),
+        "torch": _distribution_version("torch"),
+        "transformers": _distribution_version("transformers"),
+        "vllm": _distribution_version("vllm"),
+    }
+
+
+def _runtime_sha256(runtime: Mapping[str, Any]) -> str:
+    """Hash a runtime mapping that does not yet contain its own digest."""
+
+    if "runtime_sha256" in runtime:
+        raise ValueError("runtime digest input must not contain runtime_sha256")
+    encoded = json.dumps(
+        dict(runtime),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _resolve_runtime_flag(
+    explicit: bool | None,
+    *,
+    environment_name: str,
+) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    return os.environ.get(environment_name, "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _require_judge_runtime_controls(
+    judge: JudgeBackend,
+    *,
+    enforce_eager: bool,
+    disable_custom_all_reduce: bool,
+) -> None:
+    """Reject an initialized engine that contradicts the frozen controls."""
+
+    for name, expected in (
+        ("enforce_eager", enforce_eager),
+        ("disable_custom_all_reduce", disable_custom_all_reduce),
+    ):
+        actual = getattr(judge, name, None)
+        if actual is not None and bool(actual) != expected:
+            raise ValueError(
+                f"judge runtime control {name}={actual!r} does not match "
+                f"the frozen value {expected!r}"
+            )
 
 
 def _require_processed_logprobs(judge: JudgeBackend) -> None:
@@ -913,6 +1092,17 @@ def _require_stage_a_verdict_token_contract(
         )
 
 
+def _require_stage_a_inference_runtime_contract(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    inference_runtime: Mapping[str, Any],
+) -> None:
+    if any(row.get("inference_runtime") != inference_runtime for row in rows):
+        raise ValueError(
+            "Stage A summary uses an incompatible inference-runtime contract"
+        )
+
+
 def run_silent_bias_clean(
     *,
     csv_path: Path,
@@ -929,6 +1119,8 @@ def run_silent_bias_clean(
     dtype: str = "auto",
     max_num_batched_tokens: int | None = None,
     max_num_seqs: int | None = None,
+    enforce_eager: bool | None = None,
+    disable_custom_all_reduce: bool | None = None,
     include_verbalized_confidence: bool = True,
     batch_size: int = 64,
     resume: bool = True,
@@ -963,6 +1155,14 @@ def run_silent_bias_clean(
             f"{paths.planning_issues}"
         )
     items = _evaluation_items(plan.conditions, pairs_by_identity)
+    resolved_enforce_eager = _resolve_runtime_flag(
+        enforce_eager,
+        environment_name="BIASES_VLLM_ENFORCE_EAGER",
+    )
+    resolved_disable_custom_all_reduce = _resolve_runtime_flag(
+        disable_custom_all_reduce,
+        environment_name="VLLM_DISABLE_CUSTOM_ALL_REDUCE",
+    )
     active_judge = judge or _new_vllm_judge(
         model_name=model_name,
         tensor_parallel_size=tensor_parallel_size,
@@ -971,6 +1171,8 @@ def run_silent_bias_clean(
         dtype=dtype,
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
+        enforce_eager=resolved_enforce_eager,
+        disable_custom_all_reduce=resolved_disable_custom_all_reduce,
     )
     if active_judge.model_name != canonical_model_name:
         raise ValueError(
@@ -978,8 +1180,31 @@ def run_silent_bias_clean(
             f"{canonical_model_name!r}"
         )
     _require_processed_logprobs(active_judge)
+    _require_judge_runtime_controls(
+        active_judge,
+        enforce_eager=resolved_enforce_eager,
+        disable_custom_all_reduce=resolved_disable_custom_all_reduce,
+    )
     verdict_token_texts, verdict_token_ids = _judge_verdict_token_contract(
         active_judge
+    )
+    inference_runtime = _inference_runtime_provenance(
+        model_registry_name=profile.registry_name,
+        model_hf_name=canonical_model_name,
+        model_revision=model_revision,
+        tensor_parallel_size=tensor_parallel_size,
+        max_model_len=max_model_len,
+        gpu_memory_utilization=gpu_memory_utilization,
+        dtype=dtype,
+        batch_size=batch_size,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
+        enforce_eager=resolved_enforce_eager,
+        disable_custom_all_reduce=resolved_disable_custom_all_reduce,
+        consistency_runs=consistency_runs,
+        consistency_schedule=consistency_schedule,
+        sampling_temperature=sampling_temperature,
+        include_verbalized_confidence=include_verbalized_confidence,
     )
     existing_rows = (
         _read_jsonl(paths.raw_records, recover_incomplete_tail=True)
@@ -1002,6 +1227,7 @@ def run_silent_bias_clean(
         include_verbalized_confidence=include_verbalized_confidence,
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
+        inference_runtime=inference_runtime,
     )
     raw_rows = _evaluate_new_items(
         judge=active_judge,
@@ -1018,6 +1244,7 @@ def run_silent_bias_clean(
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
         batch_size=batch_size,
+        inference_runtime=inference_runtime,
         checkpoint_path=paths.raw_records,
     )
     records = _materialize_derived_outputs(
@@ -1039,6 +1266,7 @@ def run_silent_bias_clean(
         "consistency_schedule": consistency_schedule,
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
+        "inference_runtime": inference_runtime,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
         "verbalized_output_parser_version": (
             VERBALIZED_OUTPUT_PARSER_VERSION
@@ -1079,8 +1307,11 @@ def run_silent_bias_cued(
     dtype: str = "auto",
     max_num_batched_tokens: int | None = None,
     max_num_seqs: int | None = None,
+    enforce_eager: bool | None = None,
+    disable_custom_all_reduce: bool | None = None,
     include_verbalized_confidence: bool = True,
     batch_size: int = 64,
+    stage_b_routing_split: StageBRoutingSplit = "all",
     resume: bool = True,
     judge: JudgeBackend | None = None,
 ) -> dict[str, Any]:
@@ -1140,21 +1371,74 @@ def run_silent_bias_cued(
         raise ValueError(
             "Stage A summary uses an incompatible logprobs_mode"
         )
-    clean_summaries = tuple(
+    if any(
+        row.get("model_revision") != model_revision for row in model_clean_rows
+    ):
+        raise ValueError(
+            "Stage A summary uses an incompatible model revision"
+        )
+    all_clean_summaries = tuple(
         summary
         for summary in clean_summaries_from_rows(model_clean_rows)
         if summary.model_name == canonical_model_name
     )
-    if not clean_summaries:
+    if not all_clean_summaries:
         raise ValueError(
             f"No clean summaries for model {canonical_model_name!r} were found"
         )
-    for summary in clean_summaries:
+    expected_pair_keys = set(pair_key_to_identity)
+    observed_pair_keys = {summary.pair_key for summary in all_clean_summaries}
+    if len(all_clean_summaries) != len(expected_pair_keys) or (
+        observed_pair_keys != expected_pair_keys
+    ):
+        missing = sorted(expected_pair_keys - observed_pair_keys)
+        extra = sorted(observed_pair_keys - expected_pair_keys)
+        raise ValueError(
+            "Stage A summary is incomplete or duplicated for the current run "
+            f"plan: expected={len(expected_pair_keys)} "
+            f"observed={len(all_clean_summaries)} missing={missing[:3]!r} "
+            f"extra={extra[:3]!r}"
+        )
+    for summary in all_clean_summaries:
         expected_identity = pair_key_to_identity.get(summary.pair_key)
         if expected_identity != summary.pair_identity_key:
             raise ValueError(
                 "Stage A summary does not match the current dataset/model/input hash"
             )
+    resolved_enforce_eager = _resolve_runtime_flag(
+        enforce_eager,
+        environment_name="BIASES_VLLM_ENFORCE_EAGER",
+    )
+    resolved_disable_custom_all_reduce = _resolve_runtime_flag(
+        disable_custom_all_reduce,
+        environment_name="VLLM_DISABLE_CUSTOM_ALL_REDUCE",
+    )
+    inference_runtime = _inference_runtime_provenance(
+        model_registry_name=profile.registry_name,
+        model_hf_name=canonical_model_name,
+        model_revision=model_revision,
+        tensor_parallel_size=tensor_parallel_size,
+        max_model_len=max_model_len,
+        gpu_memory_utilization=gpu_memory_utilization,
+        dtype=dtype,
+        batch_size=batch_size,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
+        enforce_eager=resolved_enforce_eager,
+        disable_custom_all_reduce=resolved_disable_custom_all_reduce,
+        consistency_runs=consistency_runs,
+        consistency_schedule=consistency_schedule,
+        sampling_temperature=sampling_temperature,
+        include_verbalized_confidence=include_verbalized_confidence,
+    )
+    _require_stage_a_inference_runtime_contract(
+        model_clean_rows,
+        inference_runtime=inference_runtime,
+    )
+    clean_summaries = select_stage_b_clean_summaries(
+        all_clean_summaries,
+        routing_split=stage_b_routing_split,
+    )
 
     plan = generate_stage_b_conditions(clean_summaries)
     _write_issues(paths.planning_issues, plan.issues)
@@ -1175,6 +1459,8 @@ def run_silent_bias_cued(
         dtype=dtype,
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
+        enforce_eager=resolved_enforce_eager,
+        disable_custom_all_reduce=resolved_disable_custom_all_reduce,
     )
     if active_judge.model_name != canonical_model_name:
         raise ValueError(
@@ -1182,6 +1468,11 @@ def run_silent_bias_cued(
             f"{canonical_model_name!r}"
         )
     _require_processed_logprobs(active_judge)
+    _require_judge_runtime_controls(
+        active_judge,
+        enforce_eager=resolved_enforce_eager,
+        disable_custom_all_reduce=resolved_disable_custom_all_reduce,
+    )
     verdict_token_texts, verdict_token_ids = _judge_verdict_token_contract(
         active_judge
     )
@@ -1210,6 +1501,7 @@ def run_silent_bias_cued(
         include_verbalized_confidence=include_verbalized_confidence,
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
+        inference_runtime=inference_runtime,
     )
     raw_rows = _evaluate_new_items(
         judge=active_judge,
@@ -1226,6 +1518,7 @@ def run_silent_bias_cued(
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
         batch_size=batch_size,
+        inference_runtime=inference_runtime,
         checkpoint_path=paths.raw_records,
     )
     records = _materialize_derived_outputs(
@@ -1242,6 +1535,10 @@ def run_silent_bias_cued(
         "input_file_hash": input_hash,
         "stage_a_summary_path": str(stage_a_summary_path),
         "source_pairs": len(pair_inputs),
+        "stage_b_source_pairs": len(
+            {summary.pair_identity_key for summary in clean_summaries}
+        ),
+        "stage_b_routing_split": stage_b_routing_split,
         "conditions_planned": len(items),
         "records_written": len(records),
         "clean_and_human_tie_groups_reported": sum(
@@ -1251,6 +1548,7 @@ def run_silent_bias_cued(
         "consistency_schedule": consistency_schedule,
         "sampling_temperature": sampling_temperature,
         "include_verbalized_confidence": include_verbalized_confidence,
+        "inference_runtime": inference_runtime,
         "judge_output_parser_version": JUDGE_OUTPUT_PARSER_VERSION,
         "verbalized_output_parser_version": (
             VERBALIZED_OUTPUT_PARSER_VERSION

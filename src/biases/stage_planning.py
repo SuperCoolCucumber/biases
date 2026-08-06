@@ -19,6 +19,7 @@ from biases.schemas import (
     BiasCondition,
     BiasType,
     CueCongruency,
+    CueReferenceKind,
     HumanCueDirection,
     PairOrdering,
     VerdictLabel,
@@ -56,6 +57,7 @@ class CleanPairSummary:
     clean_record_id: str
     clean_verdict: VerdictLabel | str
     human_winner: VerdictLabel | str
+    routing_split: str | None = None
 
     @classmethod
     def from_mapping(cls, row: Mapping[str, Any]) -> "CleanPairSummary":
@@ -69,6 +71,11 @@ class CleanPairSummary:
             clean_record_id=str(row.get("clean_record_id") or row["record_id"]),
             clean_verdict=str(row.get("clean_verdict") or row["verdict"]),
             human_winner=str(row["human_winner"]),
+            routing_split=(
+                str(row["routing_split"]).strip().lower()
+                if row.get("routing_split") is not None
+                else None
+            ),
         )
 
 
@@ -289,13 +296,31 @@ def _validate_summary_group(
 
 def _cue_reference(
     summary: CleanPairSummary,
-) -> tuple[VerdictLabel | None, bool, str, PlanningIssue | None]:
+) -> tuple[
+    VerdictLabel | None,
+    bool,
+    CueReferenceKind,
+    str,
+    PlanningIssue | None,
+]:
     clean_verdict = normalize_verdict(summary.clean_verdict)
     human_winner = normalize_verdict(summary.human_winner)
     if clean_verdict in {VerdictLabel.A, VerdictLabel.B}:
-        return clean_verdict, False, "clean_verdict", None
+        return (
+            clean_verdict,
+            False,
+            CueReferenceKind.MODEL_CLEAN_VERDICT,
+            "clean_verdict",
+            None,
+        )
     if human_winner in {VerdictLabel.A, VerdictLabel.B}:
-        return human_winner, True, "human_label_for_clean_tie", None
+        return (
+            human_winner,
+            True,
+            CueReferenceKind.HUMAN_LABEL_FALLBACK,
+            "human_label_for_clean_tie",
+            None,
+        )
     ordering = normalize_ordering(summary.ordering)
     deterministic_reference = (
         VerdictLabel.A
@@ -305,6 +330,7 @@ def _cue_reference(
     return (
         deterministic_reference,
         True,
+        CueReferenceKind.DETERMINISTIC_FALLBACK,
         "deterministic_pair_hash_for_clean_and_human_tie",
         _issue(
             code="clean_and_human_tie",
@@ -326,7 +352,13 @@ def _conditions_for_summary(
     authority_doses: Sequence[int],
 ) -> tuple[list[PlannedCondition], PlanningIssue | None]:
     ordering = normalize_ordering(summary.ordering)
-    reference, clean_tie, direction_reference, issue = _cue_reference(summary)
+    (
+        reference,
+        clean_tie,
+        reference_kind,
+        direction_reference,
+        issue,
+    ) = _cue_reference(summary)
     if reference is None:
         return [], issue
 
@@ -377,8 +409,10 @@ def _conditions_for_summary(
                     direction_relative_human=human_direction,
                     clean_tie=clean_tie,
                     clean_record_id=summary.clean_record_id,
+                    reference_kind=reference_kind,
                     metadata={
                         "pair_identity_key": summary.pair_identity_key,
+                        "reference_kind": reference_kind.value,
                         "direction_reference": direction_reference,
                         "clean_verdict": clean_verdict.value,
                         "human_winner": human_winner.value,
