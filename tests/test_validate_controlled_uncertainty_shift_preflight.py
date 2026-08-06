@@ -686,6 +686,7 @@ def test_load_tokenizer_honors_model_specific_remote_code_policy(
     tmp_path: Path,
 ) -> None:
     captured: dict[str, object] = {}
+    profile = get_model_profile("qwen2.5-32b")
 
     class _AutoTokenizer:
         @staticmethod
@@ -694,10 +695,36 @@ def test_load_tokenizer_honors_model_specific_remote_code_policy(
             captured.update(kwargs)
             return _Tokenizer()
 
+    def _cached_file(
+        model_name: str,
+        filename: str,
+        **kwargs: object,
+    ) -> Path:
+        captured["cached_model_name"] = model_name
+        captured["cached_filename"] = filename
+        captured["cached_kwargs"] = kwargs
+        return (
+            tmp_path
+            / "models--Qwen--Qwen2.5-32B-Instruct"
+            / "snapshots"
+            / str(profile.revision)
+            / filename
+        )
+
     monkeypatch.setitem(
         sys.modules,
         "transformers",
         types.SimpleNamespace(AutoTokenizer=_AutoTokenizer),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers.utils",
+        types.SimpleNamespace(),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers.utils.hub",
+        types.SimpleNamespace(cached_file=_cached_file),
     )
 
     tokenizer = MODULE.load_tokenizer(
@@ -712,6 +739,30 @@ def test_load_tokenizer_honors_model_specific_remote_code_policy(
     assert isinstance(tokenizer, _Tokenizer)
     assert captured["model_name"] == "Qwen/Qwen2.5-32B-Instruct"
     assert captured["trust_remote_code"] is False
+    assert captured["cached_model_name"] == captured["model_name"]
+    assert captured["cached_filename"] == "tokenizer_config.json"
+    assert captured["cached_kwargs"] == {
+        "revision": profile.revision,
+        "cache_dir": tmp_path,
+        "local_files_only": True,
+        "token": None,
+    }
+    assert MODULE._resolved_tokenizer_commit(tokenizer) == profile.revision
+
+
+def test_snapshot_commit_requires_exact_hub_snapshot_path(tmp_path: Path) -> None:
+    revision = "5ede1c97bbab6ce5cda5812749b4c0bdf79b18dd"
+    path = tmp_path / "model" / "snapshots" / revision / "tokenizer_config.json"
+    assert MODULE._snapshot_commit_from_resolved_path(path) == revision
+
+    with pytest.raises(ValueError, match="immutable Hub snapshot"):
+        MODULE._snapshot_commit_from_resolved_path(
+            tmp_path / "model" / "tokenizer_config.json"
+        )
+    with pytest.raises(ValueError, match="invalid commit"):
+        MODULE._snapshot_commit_from_resolved_path(
+            tmp_path / "model" / "snapshots" / "main" / "tokenizer_config.json"
+        )
 
 
 def test_main_sanitizes_tokenizer_failure_before_writing_report(

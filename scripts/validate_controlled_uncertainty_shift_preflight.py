@@ -424,6 +424,7 @@ def _runner_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
 
 def _resolved_tokenizer_commit(tokenizer: Any) -> str | None:
     for value in (
+        getattr(tokenizer, "_biases_resolved_commit", None),
         getattr(tokenizer, "_commit_hash", None),
         getattr(tokenizer, "commit_hash", None),
     ):
@@ -431,11 +432,38 @@ def _resolved_tokenizer_commit(tokenizer: Any) -> str | None:
             return value
     init_kwargs = getattr(tokenizer, "init_kwargs", None)
     if isinstance(init_kwargs, Mapping):
-        for key in ("_commit_hash", "commit_hash", "revision"):
+        for key in (
+            "_biases_resolved_commit",
+            "_commit_hash",
+            "commit_hash",
+            "revision",
+        ):
             value = init_kwargs.get(key)
             if isinstance(value, str) and value:
                 return value
     return None
+
+
+def _snapshot_commit_from_resolved_path(path: str | Path) -> str:
+    """Extract the immutable Hub commit from a resolved snapshot path."""
+
+    parts = Path(path).parts
+    snapshot_indices = [
+        index for index, part in enumerate(parts) if part == "snapshots"
+    ]
+    if not snapshot_indices:
+        raise ValueError(
+            "tokenizer config did not resolve through an immutable Hub snapshot"
+        )
+    index = snapshot_indices[-1] + 1
+    if index >= len(parts):
+        raise ValueError("tokenizer snapshot path does not contain a commit")
+    commit = parts[index]
+    if len(commit) != 40 or any(
+        character not in "0123456789abcdef" for character in commit
+    ):
+        raise ValueError("tokenizer snapshot path contains an invalid commit")
+    return commit
 
 
 def _single_round_trip_token_id(tokenizer: Any, surface: str) -> int:
@@ -1552,17 +1580,44 @@ def build_preflight_report(
 
 def load_tokenizer(args: argparse.Namespace) -> Any:
     from transformers import AutoTokenizer
+    from transformers.utils.hub import cached_file
 
     profile = get_model_profile(args.model_name)
     token: bool | None = True if args.require_authentication else None
-    return AutoTokenizer.from_pretrained(
+    snapshot_kwargs = {
+        "revision": profile.revision,
+        "cache_dir": args.cache_dir,
+        "local_files_only": not args.allow_download,
+        "token": token,
+    }
+    resolved_config = cached_file(
         profile.hf_model_name,
-        revision=profile.revision,
-        cache_dir=args.cache_dir,
-        local_files_only=not args.allow_download,
-        trust_remote_code=profile.trust_remote_code,
-        token=token,
+        "tokenizer_config.json",
+        **snapshot_kwargs,
     )
+    if resolved_config is None:
+        raise ValueError("tokenizer config could not be resolved")
+    resolved_commit = _snapshot_commit_from_resolved_path(resolved_config)
+    if resolved_commit != profile.revision:
+        raise ValueError(
+            "tokenizer config resolved to a different model revision: "
+            f"observed={resolved_commit!r} expected={profile.revision!r}"
+        )
+    tokenizer = AutoTokenizer.from_pretrained(
+        profile.hf_model_name,
+        **snapshot_kwargs,
+        trust_remote_code=profile.trust_remote_code,
+    )
+    try:
+        setattr(tokenizer, "_biases_resolved_commit", resolved_commit)
+    except (AttributeError, TypeError):
+        init_kwargs = getattr(tokenizer, "init_kwargs", None)
+        if not isinstance(init_kwargs, dict):
+            raise ValueError(
+                "tokenizer cannot retain its independently resolved commit"
+            )
+        init_kwargs["_biases_resolved_commit"] = resolved_commit
+    return tokenizer
 
 
 def build_parser() -> argparse.ArgumentParser:
