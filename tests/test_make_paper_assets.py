@@ -102,9 +102,13 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 **provenance,
                 "model_name": "Qwen_Model",
                 "family": "authority",
+                "direction": "incongruent",
+                "clean_tie": False,
                 "primary": True,
                 "routing_split": "test",
                 "shift_metric": "signed_cue_mass",
+                "baseline_channel": "entropy",
+                "decision_rule": "auc_difference_ci_low > 0",
                 "low_dose": 1,
                 "high_dose": 4,
                 "n": 20,
@@ -239,6 +243,10 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "clean_tie": False,
                 "routing_split": "test",
                 "primary": True,
+                "calibration_coverage": 0.50,
+                "calibration_risk": 0.05,
+                "threshold": 0.90,
+                "test_accepted": 10,
                 "test_coverage": 0.55,
                 "test_realized_risk": 0.30,
                 "test_risk_inflation_vs_target": 0.20,
@@ -248,6 +256,33 @@ def _fixture_rows() -> dict[str, list[dict[str, object]]]:
                 "accepted_flip_fraction_ci_low": 0.66,
                 "accepted_flip_fraction_ci_high": 0.91,
                 "p_value_holm": 0.02,
+            },
+            {
+                **provenance,
+                "model_name": "Qwen_Model",
+                "family": "authority",
+                "direction": "incongruent",
+                "dose": 4,
+                "ordering": "swap_average",
+                "aggregation": "swap_average",
+                "target_risk": 0.10,
+                "confidence_channel": "msp",
+                "clean_tie": False,
+                "routing_split": "test",
+                "primary": False,
+                "calibration_coverage": 0.50,
+                "calibration_risk": 0.05,
+                "threshold": 0.90,
+                "test_accepted": 8,
+                "test_coverage": 0.40,
+                "test_realized_risk": 0.25,
+                "test_risk_inflation_vs_target": 0.15,
+                "risk_inflation_vs_target_ci_low": 0.02,
+                "risk_inflation_vs_target_ci_high": 0.28,
+                "test_accepted_flip_fraction": 0.50,
+                "accepted_flip_fraction_ci_low": 0.30,
+                "accepted_flip_fraction_ci_high": 0.70,
+                "p_value_holm": "",
             },
             {
                 **provenance,
@@ -380,7 +415,20 @@ def test_table_and_digest_generation_is_byte_identical(tmp_path: Path) -> None:
     assert table.index("1 & 20") < table.index("4 & 20")
     assert "## RQ1 — Silent bias" in digest
     assert "## Evidence scope" in digest
-    assert "clean risk guarantee fails" in digest
+    assert "empirical 10% target-risk violation supported under bias" in digest
+    assert "beyond clean uncertainty" not in digest
+    assert "Delta AUROC: low-dose signed cue-mass shift" in digest
+    assert "shift predictor outperforms clean entropy" in digest
+    assert "### Primary single-ordering estimand" in digest
+    assert "Primary cells: 1" in digest
+    assert (
+        "accepted 10 biased-test examples, with 3 observed prediction errors"
+        in digest
+    )
+    assert "### Swap-average sensitivity (non-primary)" in digest
+    assert "supplemental descriptive swap-average sensitivity" in digest
+    assert "Fraction of biased-test flips retained by the threshold" in digest
+    assert "clean risk guarantee" not in digest
     assert "[0.660, 0.910]" in digest
     assert "incomplete: adjusted p unavailable" not in digest
     threshold_table = (
@@ -391,6 +439,7 @@ def test_table_and_digest_generation_is_byte_identical(tmp_path: Path) -> None:
     assert "0.890" not in threshold_table
     assert "generated_at" not in manifest_text
     assert str(tmp_path) not in manifest_text
+    assert first["asset_version"] == "silent-bias-paper-assets-v4"
 
 
 def test_rq2_headline_filters_do_not_pool_channels_splits_or_ties() -> None:
@@ -398,6 +447,16 @@ def test_rq2_headline_filters_do_not_pool_channels_splits_or_ties() -> None:
     threshold = assets._headline_threshold_rows(rows["rq2_threshold_transfer.csv"])
     assert len(threshold) == 1
     assert threshold[0]["confidence_channel"] == "msp"
+    assert threshold[0]["primary"] is True
+    assert threshold[0]["aggregation"] == "single_ordering"
+
+    sensitivity = assets._sensitivity_threshold_rows(
+        rows["rq2_threshold_transfer.csv"]
+    )
+    assert len(sensitivity) == 1
+    assert sensitivity[0]["primary"] is False
+    assert sensitivity[0]["aggregation"] == "swap_average"
+    assert sensitivity[0]["ordering"] == "swap_average"
 
     reliability = assets._headline_rq2_figure_rows(rows["rq2_reliability.csv"])
     risk = assets._headline_rq2_figure_rows(rows["rq2_risk_coverage.csv"])
@@ -441,28 +500,161 @@ def test_rq1_and_rq3_asset_selectors_reject_calibration_rows() -> None:
     )
 
 
-def test_digest_never_claims_failure_when_transferred_threshold_has_zero_coverage() -> None:
+def test_digest_never_claims_failure_when_transferred_threshold_has_zero_coverage(
+) -> None:
     decision, interval = assets._rq2_decision(
         {
+            "calibration_coverage": 0.50,
+            "calibration_risk": 0.05,
+            "threshold": 0.90,
+            "test_accepted": 0,
             "test_coverage": 0.0,
+            "test_realized_risk": "",
             "test_risk_inflation_vs_target": "",
             "risk_inflation_vs_target_ci_low": 0.2,
             "risk_inflation_vs_target_ci_high": 0.9,
             "p_value_holm": 0.01,
         }
     )
-    assert decision == "unavailable: zero test coverage"
+    assert decision == (
+        "finite clean rule transferred, but biased-test coverage is zero; "
+        "risk and inflation undefined"
+    )
     assert interval == "--"
     assert (
         assets._rq2_adjusted_p(
             {
+                "primary": True,
+                "calibration_coverage": 0.50,
+                "calibration_risk": 0.05,
+                "threshold": 0.90,
+                "test_accepted": 0,
                 "test_coverage": 0.0,
+                "test_realized_risk": "",
                 "test_risk_inflation_vs_target": "",
                 "p_value_holm": 0.01,
             }
         )
         == "--"
     )
+
+
+def test_rq2_no_rule_is_distinct_from_zero_test_coverage() -> None:
+    decision, interval = assets._rq2_decision(
+        {
+            "primary": True,
+            "calibration_coverage": 0.0,
+            "calibration_risk": "",
+            "threshold": "inf",
+            "test_accepted": 0,
+            "test_coverage": 0.0,
+            "test_realized_risk": "",
+            "test_risk_inflation_vs_target": "",
+        }
+    )
+    assert decision == (
+        "no positive-coverage clean rule meets the 10% target; "
+        "risk and inflation undefined"
+    )
+    assert interval == "--"
+
+
+def test_rq2_malformed_blank_threshold_fails_closed() -> None:
+    with pytest.raises(ValueError, match="Inconsistent RQ2 threshold-transfer state"):
+        assets._rq2_decision(
+            {
+                "primary": True,
+                "calibration_coverage": 0.0,
+                "calibration_risk": "",
+                "threshold": "",
+                "test_accepted": 0,
+                "test_coverage": 0.0,
+                "test_realized_risk": "",
+                "test_risk_inflation_vs_target": "",
+            }
+        )
+
+
+def test_rq2_primary_and_supplemental_decisions_remain_separate() -> None:
+    common = {
+        "calibration_coverage": 0.50,
+        "calibration_risk": 0.05,
+        "threshold": 0.90,
+        "test_accepted": 10,
+        "test_coverage": 0.50,
+        "test_realized_risk": 0.20,
+        "test_risk_inflation_vs_target": 0.10,
+        "risk_inflation_vs_target_ci_low": 0.02,
+        "risk_inflation_vs_target_ci_high": 0.18,
+        "p_value_holm": "",
+    }
+    primary, _ = assets._rq2_decision({**common, "primary": True})
+    supplemental, _ = assets._rq2_decision({**common, "primary": False})
+    assert primary == "incomplete: adjusted p unavailable"
+    assert supplemental == "supplemental descriptive swap-average sensitivity"
+
+
+@pytest.mark.parametrize(
+    ("ci_low", "ci_high", "p_value", "expected"),
+    (
+        (
+            0.01,
+            0.20,
+            0.10,
+            "positive inflation, not significant after Holm correction",
+        ),
+        (-0.20, 0.0, 0.50, "risk not above the 10% target in this cell"),
+        (-0.10, 0.10, 0.50, "target-risk transfer inconclusive"),
+    ),
+)
+def test_rq2_primary_decision_labels_empirical_evidence(
+    ci_low: float,
+    ci_high: float,
+    p_value: float,
+    expected: str,
+) -> None:
+    decision, interval = assets._rq2_decision(
+        {
+            "primary": True,
+            "calibration_coverage": 0.50,
+            "calibration_risk": 0.05,
+            "threshold": 0.90,
+            "test_accepted": 10,
+            "test_coverage": 0.50,
+            "test_realized_risk": 0.20,
+            "test_risk_inflation_vs_target": 0.10,
+            "risk_inflation_vs_target_ci_low": ci_low,
+            "risk_inflation_vs_target_ci_high": ci_high,
+            "p_value_holm": p_value,
+        }
+    )
+    assert decision == expected
+    assert interval == f"[{ci_low:.3f}, {ci_high:.3f}]"
+
+
+@pytest.mark.parametrize(
+    ("estimate", "ci_low", "ci_high", "expected"),
+    (
+        (0.10, 0.01, 0.20, "shift predictor outperforms clean entropy"),
+        (-0.10, -0.20, -0.01, "shift predictor underperforms clean entropy"),
+        (0.00, -0.10, 0.10, "no clear AUROC difference"),
+        (0.10, "", 0.10, "unavailable: susceptibility estimate or CI missing"),
+        ("", 0.01, 0.20, "unavailable: susceptibility estimate or CI missing"),
+    ),
+)
+def test_rq1_susceptibility_decision_reports_direction(
+    estimate: object,
+    ci_low: object,
+    ci_high: object,
+    expected: str,
+) -> None:
+    assert assets._rq1_susceptibility_decision(
+        {
+            "auc_difference": estimate,
+            "auc_difference_ci_low": ci_low,
+            "auc_difference_ci_high": ci_high,
+        }
+    ) == expected
 
 
 def test_evidence_scope_counts_source_pairs_from_ordered_pair_keys() -> None:

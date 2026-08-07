@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 
-ASSET_VERSION = "silent-bias-paper-assets-v3"
+ASSET_VERSION = "silent-bias-paper-assets-v4"
 REQUIRED_ANALYSIS_FILES = (
     "paired_shifts.csv",
     "rq1_silent_shift.csv",
@@ -108,6 +108,18 @@ def _number(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def _is_positive_infinity(value: Any) -> bool:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return False
+    return math.isinf(number) and number > 0.0
+
+
+def _is_blank(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
 def _integer(value: Any) -> int | None:
     number = _number(value)
     return None if number is None else int(number)
@@ -193,33 +205,97 @@ def _format_p25(row: Mapping[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def _rq2_decision(row: Mapping[str, Any]) -> tuple[str, str]:
-    point = _number(row.get("test_risk_inflation_vs_target"))
+def _rq2_rule_state(row: Mapping[str, Any]) -> str:
+    calibration_coverage = _number(row.get("calibration_coverage"))
+    calibration_risk = _number(row.get("calibration_risk"))
+    threshold = _number(row.get("threshold"))
+    accepted = _integer(row.get("test_accepted"))
     coverage = _number(row.get("test_coverage"))
-    if point is None or coverage == 0.0:
-        return "unavailable: zero test coverage", "--"
+    realized_risk = _number(row.get("test_realized_risk"))
+    inflation = _number(row.get("test_risk_inflation_vs_target"))
+
+    if (
+        calibration_coverage == 0.0
+        and _is_positive_infinity(row.get("threshold"))
+        and _is_blank(row.get("calibration_risk"))
+        and accepted == 0
+        and coverage == 0.0
+        and realized_risk is None
+        and inflation is None
+    ):
+        return "no_rule"
+    if (
+        calibration_coverage is not None
+        and calibration_coverage > 0.0
+        and threshold is not None
+        and calibration_risk is not None
+        and accepted == 0
+        and coverage == 0.0
+        and realized_risk is None
+        and inflation is None
+    ):
+        return "finite_rule_zero_test_coverage"
+    if (
+        calibration_coverage is not None
+        and calibration_coverage > 0.0
+        and threshold is not None
+        and calibration_risk is not None
+        and accepted is not None
+        and accepted > 0
+        and coverage is not None
+        and coverage > 0.0
+        and realized_risk is not None
+        and inflation is not None
+    ):
+        return "positive_coverage"
+    raise ValueError(
+        "Inconsistent RQ2 threshold-transfer state for "
+        f"model={row.get('model_name', '')!r}, family={row.get('family', '')!r}, "
+        f"ordering={row.get('ordering', '')!r}"
+    )
+
+
+def _rq2_decision(row: Mapping[str, Any]) -> tuple[str, str]:
+    state = _rq2_rule_state(row)
+    if state == "no_rule":
+        return (
+            "no positive-coverage clean rule meets the 10% target; "
+            "risk and inflation undefined",
+            "--",
+        )
+    if state == "finite_rule_zero_test_coverage":
+        return (
+            "finite clean rule transferred, but biased-test coverage is zero; "
+            "risk and inflation undefined",
+            "--",
+        )
+
+    point = _number(row.get("test_risk_inflation_vs_target"))
+    assert point is not None
     ci_low = _number(row.get("risk_inflation_vs_target_ci_low"))
     ci_high = _number(row.get("risk_inflation_vs_target_ci_high"))
     if ci_low is None or ci_high is None:
         return "incomplete: clustered CI unavailable", "--"
     formatted_ci = _format_ci(ci_low, ci_high)
+    if not _truthy(row.get("primary")):
+        return "supplemental descriptive swap-average sensitivity", formatted_ci
     if ci_low > 0.0:
         p_value = _number(row.get("p_value_holm"))
         if p_value is None:
             return "incomplete: adjusted p unavailable", formatted_ci
         if p_value < 0.05:
-            return "clean risk guarantee fails", formatted_ci
-        return "inconclusive after Holm correction", formatted_ci
+            return (
+                "empirical 10% target-risk violation supported under bias",
+                formatted_ci,
+            )
+        return "positive inflation, not significant after Holm correction", formatted_ci
     if ci_high <= 0.0:
-        return "clean risk guarantee survives", formatted_ci
-    return "inconclusive", formatted_ci
+        return "risk not above the 10% target in this cell", formatted_ci
+    return "target-risk transfer inconclusive", formatted_ci
 
 
 def _rq2_adjusted_p(row: Mapping[str, Any]) -> str:
-    if (
-        _number(row.get("test_risk_inflation_vs_target")) is None
-        or _number(row.get("test_coverage")) == 0.0
-    ):
+    if not _truthy(row.get("primary")) or _rq2_rule_state(row) != "positive_coverage":
         return "--"
     return _format_p(row.get("p_value_holm"))
 
@@ -304,19 +380,30 @@ def _rq1_susceptibility_rows(
     rows: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     primary = [
-        row
+        dict(row)
         for row in rows
         if _truthy(row.get("primary"))
         and row.get("routing_split") == "test"
+        and row.get("direction") == "incongruent"
+        and _false_flag(row.get("clean_tie"))
+        and row.get("shift_metric") == "signed_cue_mass"
+        and row.get("baseline_channel") == "entropy"
+        and row.get("decision_rule") == "auc_difference_ci_low > 0"
     ]
-    if not primary:
-        primary = [
-            row
-            for row in rows
-            if row.get("shift_metric") == "signed_cue_mass"
-            and row.get("routing_split") == "test"
-        ]
     return _stable_rows(primary, ("model_name", "family"))
+
+
+def _rq1_susceptibility_decision(row: Mapping[str, Any]) -> str:
+    estimate = _number(row.get("auc_difference"))
+    ci_low = _number(row.get("auc_difference_ci_low"))
+    ci_high = _number(row.get("auc_difference_ci_high"))
+    if estimate is None or ci_low is None or ci_high is None:
+        return "unavailable: susceptibility estimate or CI missing"
+    if ci_low > 0.0:
+        return "shift predictor outperforms clean entropy"
+    if ci_high < 0.0:
+        return "shift predictor underperforms clean entropy"
+    return "no clear AUROC difference"
 
 
 def _headline_threshold_rows(
@@ -331,6 +418,45 @@ def _headline_threshold_rows(
         and row.get("confidence_channel") == "msp"
         and _false_flag(row.get("clean_tie"))
         and row.get("routing_split") == "test"
+        and _truthy(row.get("primary"))
+        and row.get("aggregation") == "single_ordering"
+        and row.get("ordering") in {"ab", "ba"}
+    ]
+    grouped: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+    for row in eligible:
+        grouped[
+            (
+                str(row.get("model_name", "")),
+                str(row.get("family", "")),
+                str(row.get("ordering", "")),
+                str(row.get("aggregation", "")),
+            )
+        ].append(row)
+    selected = [
+        max(group, key=lambda row: _number(row.get("dose")) or -math.inf)
+        for group in grouped.values()
+    ]
+    return _stable_rows(
+        selected,
+        ("model_name", "family", "aggregation", "ordering", "dose"),
+    )
+
+
+def _sensitivity_threshold_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    eligible = [
+        dict(row)
+        for row in rows
+        if row.get("family") not in {"", "clean", None}
+        and row.get("direction") == "incongruent"
+        and _number(row.get("target_risk")) == 0.1
+        and row.get("confidence_channel") == "msp"
+        and _false_flag(row.get("clean_tie"))
+        and row.get("routing_split") == "test"
+        and _false_flag(row.get("primary"))
+        and row.get("aggregation") == "swap_average"
+        and row.get("ordering") == "swap_average"
     ]
     grouped: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in eligible:
@@ -448,9 +574,9 @@ def build_latex_tables(
                 "Model",
                 "Family",
                 "n",
-                "Shift AUROC",
-                "Clean AUROC",
-                "Difference",
+                "Low-dose shift AUROC",
+                "Clean entropy AUROC",
+                "Delta AUROC",
                 "95% CI",
             ),
             rows=[
@@ -483,8 +609,8 @@ def build_latex_tables(
                 "Risk",
                 "Risk inflation",
                 "Inflation 95% CI",
-                "Accepted flips",
-                "Accepted-flip 95% CI",
+                "Flip retention",
+                "Retention 95% CI",
                 "Holm p",
             ),
             rows=[
@@ -616,6 +742,93 @@ def _source_reference(name: str, input_: AnalysisInput) -> str:
     return f"`$ANALYSIS_DIR/{name}` (`{digest}`)"
 
 
+def _rq2_claim_rows(
+    rows: Sequence[Mapping[str, Any]],
+    threshold_input: AnalysisInput,
+) -> list[tuple[Any, ...]]:
+    claims: list[tuple[Any, ...]] = []
+    for row in rows:
+        decision, displayed_ci = _rq2_decision(row)
+        condition = (
+            f"{row.get('family', '')} {row.get('direction', '')} "
+            f"dose {row.get('dose', '')}; {row.get('aggregation', '')}; "
+            f"{row.get('ordering', '')}"
+        )
+        source = _source_reference(threshold_input.name, threshold_input)
+        claims.extend(
+            (
+                (
+                    "Realized-risk inflation at clean-calibrated 10% target",
+                    row.get("model_name", ""),
+                    condition,
+                    _format_number(row.get("test_risk_inflation_vs_target")),
+                    displayed_ci,
+                    decision,
+                    source,
+                ),
+                (
+                    "Test coverage at transferred threshold",
+                    row.get("model_name", ""),
+                    condition,
+                    _format_number(row.get("test_coverage")),
+                    "--",
+                    "descriptive",
+                    source,
+                ),
+                (
+                    "Fraction of biased-test flips retained by the threshold",
+                    row.get("model_name", ""),
+                    condition,
+                    _format_number(row.get("test_accepted_flip_fraction")),
+                    _format_ci(
+                        row.get("accepted_flip_fraction_ci_low"),
+                        row.get("accepted_flip_fraction_ci_high"),
+                    ),
+                    "descriptive",
+                    source,
+                ),
+            )
+        )
+    return claims
+
+
+def _rq2_primary_summary(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    states = [_rq2_rule_state(row) for row in rows]
+    no_rule = states.count("no_rule")
+    finite_zero = states.count("finite_rule_zero_test_coverage")
+    positive = states.count("positive_coverage")
+    accepted_total = 0
+    error_total = 0
+    for row, state in zip(rows, states, strict=True):
+        accepted = _integer(row.get("test_accepted"))
+        if accepted is None:
+            raise ValueError("Primary RQ2 row is missing test_accepted")
+        accepted_total += accepted
+        if state != "positive_coverage":
+            continue
+        realized_risk = _number(row.get("test_realized_risk"))
+        assert realized_risk is not None
+        raw_errors = accepted * realized_risk
+        rounded_errors = round(raw_errors)
+        if not math.isclose(raw_errors, rounded_errors, abs_tol=1e-8):
+            raise ValueError("Primary RQ2 accepted errors are not integral")
+        error_total += rounded_errors
+    return [
+        (
+            f"- Primary cells: {len(rows)}; zero biased-test coverage: "
+            f"{no_rule + finite_zero} ({no_rule} without a positive-coverage "
+            f"clean rule; {finite_zero} finite-rule transfers); positive "
+            f"coverage: {positive}."
+        ),
+        (
+            f"- Frozen primary thresholds accepted {accepted_total} biased-test "
+            f"examples, with {error_total} observed prediction errors among the "
+            "accepted examples."
+        ),
+        "- Realized risk and risk inflation are undefined in every zero-coverage cell.",
+    ]
+
+
 def _evidence_unit_summary(rows: Sequence[Mapping[str, Any]]) -> str:
     pair_keys_by_model: dict[str, set[str]] = defaultdict(set)
     orderings_by_model: dict[str, set[str]] = defaultdict(set)
@@ -737,14 +950,10 @@ def build_results_digest(inputs: Mapping[str, AnalysisInput]) -> str:
             )
         )
     for row in susceptibility_rows:
-        ci_low = _number(row.get("auc_difference_ci_low"))
-        if ci_low is None:
-            decision = "incomplete: CI unavailable"
-        else:
-            decision = "supports" if ci_low > 0.0 else "does not support"
         rq1_claims.append(
             (
-                "Low-dose shift predicts highest-dose flip beyond clean uncertainty",
+                "Delta AUROC: low-dose signed cue-mass shift versus clean entropy "
+                "for predicting the highest-dose flip",
                 row.get("model_name", ""),
                 row.get("family", ""),
                 f"{row.get('low_dose', '')}→{row.get('high_dose', '')}",
@@ -753,7 +962,7 @@ def build_results_digest(inputs: Mapping[str, AnalysisInput]) -> str:
                     row.get("auc_difference_ci_low"),
                     row.get("auc_difference_ci_high"),
                 ),
-                decision,
+                _rq1_susceptibility_decision(row),
                 _source_reference(susceptibility_input.name, susceptibility_input),
             )
         )
@@ -765,57 +974,49 @@ def build_results_digest(inputs: Mapping[str, AnalysisInput]) -> str:
     )
 
     threshold_rows = _headline_threshold_rows(threshold_input.rows)
-    lines.extend(("", "## RQ2 — Selective evaluation under bias", ""))
-    rq2_claims: list[tuple[Any, ...]] = []
-    for row in threshold_rows:
-        decision, displayed_ci = _rq2_decision(row)
-        condition = (
-            f"{row.get('family', '')} {row.get('direction', '')} "
-            f"dose {row.get('dose', '')}; {row.get('aggregation', '')}; "
-            f"{row.get('ordering', '')}"
+    sensitivity_rows = _sensitivity_threshold_rows(threshold_input.rows)
+    lines.extend(
+        (
+            "",
+            "## RQ2 — Selective evaluation under bias",
+            "",
+            "### Primary single-ordering estimand",
+            "",
         )
-        rq2_claims.append(
-            (
-                "Realized-risk inflation at clean-calibrated 10% target",
-                row.get("model_name", ""),
-                condition,
-                _format_number(row.get("test_risk_inflation_vs_target")),
-                displayed_ci,
-                decision,
-                _source_reference(threshold_input.name, threshold_input),
-            )
-        )
-        rq2_claims.append(
-            (
-                "Test coverage at transferred threshold",
-                row.get("model_name", ""),
-                condition,
-                _format_number(row.get("test_coverage")),
-                "--",
-                "descriptive",
-                _source_reference(threshold_input.name, threshold_input),
-            )
-        )
-        rq2_claims.append(
-            (
-                "Accepted fraction of incongruent flips",
-                row.get("model_name", ""),
-                condition,
-                _format_number(row.get("test_accepted_flip_fraction")),
-                _format_ci(
-                    row.get("accepted_flip_fraction_ci_low"),
-                    row.get("accepted_flip_fraction_ci_high"),
-                ),
-                "descriptive",
-                _source_reference(threshold_input.name, threshold_input),
-            )
-        )
+    )
+    lines.extend(_rq2_primary_summary(threshold_rows))
+    lines.append("")
     lines.extend(
         _markdown_table(
             ("Claim", "Model", "Condition", "Estimate", "95% CI", "Decision", "Source"),
-            rq2_claims,
+            _rq2_claim_rows(threshold_rows, threshold_input),
         )
     )
+    if sensitivity_rows:
+        lines.extend(
+            (
+                "",
+                "### Swap-average sensitivity (non-primary)",
+                "",
+                "These descriptive rows average the two orderings and are excluded "
+                "from the frozen primary single-ordering estimand and Holm family.",
+                "",
+            )
+        )
+        lines.extend(
+            _markdown_table(
+                (
+                    "Claim",
+                    "Model",
+                    "Condition",
+                    "Estimate",
+                    "95% CI",
+                    "Decision",
+                    "Source",
+                ),
+                _rq2_claim_rows(sensitivity_rows, threshold_input),
+            )
+        )
 
     dose_rows = _rq3_dose_rows(dose_input.rows)
     trend_rows = _rq3_trend_rows(trend_input.rows)

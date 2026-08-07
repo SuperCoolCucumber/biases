@@ -536,6 +536,14 @@ def _refresh_asset_manifests(package: CompletePackage) -> None:
         )
 
 
+def _set_asset_version(package: CompletePackage, version: str) -> None:
+    for asset in package.assets:
+        path = asset.directory / "paper_assets_manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["asset_version"] = version
+        _write_json(path, manifest)
+
+
 def _make_complete_package(tmp_path: Path) -> CompletePackage:
     analysis_dir = tmp_path / "analysis"
     stage_a = tmp_path / "stage-a.jsonl"
@@ -634,6 +642,18 @@ def _validate(package: CompletePackage):
 
 def _codes(package: CompletePackage) -> set[str]:
     return {issue.code for issue in _validate(package).errors}
+
+
+def test_legacy_v3_asset_packages_remain_supported(tmp_path: Path) -> None:
+    package = _make_complete_package(tmp_path)
+    _set_asset_version(package, "silent-bias-paper-assets-v3")
+    assert _validate(package).passed
+
+
+def test_unknown_asset_version_fails_closed(tmp_path: Path) -> None:
+    package = _make_complete_package(tmp_path)
+    _set_asset_version(package, "silent-bias-paper-assets-v2")
+    assert "asset_version_mismatch" in _codes(package)
 
 
 def _replace_csv(

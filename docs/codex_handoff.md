@@ -504,8 +504,9 @@ from zero-coverage or otherwise non-estimable pilot threshold cells.
 
 Preliminary results are summarized in
 `reports/preliminary_silent_bias_pilot.md`. In brief, all 32 primary RQ1 cells
-show positive non-flip cue-mass movement; the paired shift beats clean
-uncertainty in 3 of 8 susceptibility comparisons; all eight fitted RQ3 dose
+show positive non-flip cue-mass movement; low-dose signed cue-mass shift has
+higher AUROC than clean entropy in 3 of 8 susceptibility comparisons; all
+eight fitted RQ3 dose
 slopes are positive without implying empirically monotone ladders; and only
 Hermes bandwagon supports a positive pre-flip entropy trend. RQ2 is not
 resolved: 11 of 16 primary high-dose single-ordering cells have zero test

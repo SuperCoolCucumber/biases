@@ -54,9 +54,9 @@ not flip. Mean shifts range from 0.0197 to 0.1131. This is strong pilot evidence
 for the existence of silent bias across all four judges and both social-cue
 families.
 
-The stronger susceptibility claim is less universal. A low-dose shift beats
-clean uncertainty alone for predicting a highest-dose flip in 3 of 8
-model-by-family comparisons:
+The stronger susceptibility comparison is less universal. Low-dose signed
+cue-mass shift has higher AUROC than clean entropy for predicting the matched
+highest-dose flip in 3 of 8 model-by-family comparisons:
 
 - Qwen3-14B bandwagon: ΔAUROC 0.192, 95% CI [0.139, 0.248];
 - Qwen3-4B authority: ΔAUROC 0.226, 95% CI [0.144, 0.311]; and
@@ -70,10 +70,11 @@ detector rather than a model- and family-dependent one.
 
 At the preregistered 10% target risk, 11 of 16 primary high-dose,
 single-ordering cells accept no test examples. Of the five cells with finite
-risk, three meet the declared “clean guarantee survives” decision rule and two
-are inconclusive; none shows statistically supported risk inflation. Test
-coverage is only 0–2.02%, and the largest point estimate of the accepted
-fraction of incongruent flips is zero.
+risk, three have upper confidence limits no greater than the target and two
+are inconclusive; none shows statistically supported risk inflation. This is
+an empirical calibration result, not a formal selective-risk guarantee. Test
+coverage is only 0–2.02%, and the largest point estimate of flip retention is
+zero.
 
 This is not evidence that abstention is robust. It shows that the clean
 threshold is usually too selective for a 198-pair pilot to estimate the

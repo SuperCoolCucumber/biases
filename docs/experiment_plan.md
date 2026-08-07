@@ -277,9 +277,10 @@ These are secondary unless explicitly identified below.
 The primary predictive comparison is AUROC of the lowest-dose signed mass
 shift for predicting an incongruent flip at the highest dose. Compare it with
 clean-condition entropy alone using paired question-cluster bootstrap
-differences. Claim label-free susceptibility information beyond clean
-uncertainty only when the AUROC difference has a strictly positive 95%
-question-cluster bootstrap interval. The comparison is undefined, and the
+differences. Conclude that low-dose signed cue-mass shift outperforms clean
+entropy for predicting the matched highest-dose flip only when the AUROC
+difference has a strictly positive 95% question-cluster bootstrap interval.
+The comparison is undefined, and the
 claim remains unavailable, when either highest-dose outcome class is absent.
 
 ## RQ2: Selective Evaluation Under Bias
@@ -297,7 +298,7 @@ agreement against the consistency majority verdict, and verbalized confidence
 against the free verbalized-pass verdict. A secondary-channel observation with
 an unparseable or missing same-pass verdict is unavailable for that channel and
 is never silently scored against the deterministic verdict. Secondary-channel
-accepted-flip fractions likewise compare the matching clean and cued
+flip-retention fractions likewise compare the matching clean and cued
 same-pass verdicts; the primary MSP flip definition is unchanged.
 
 The pilot gate requires complete constrained-logit and scheduled-consistency
@@ -317,19 +318,22 @@ The headline metrics are:
 
 1. realized-risk inflation:
    `risk(cued, test, tau_clean) - target_risk`;
-2. accepted confident flip rate: the fraction of incongruent flips whose MSP
+2. flip retention: the fraction of incongruent biased-test flips whose MSP
    meets `tau_clean`.
 
 The primary condition family is the highest incongruent dose, reported
 separately by model and bias family at the 10% target. The 20% target and other
 doses are confirmatory dose profiles.
 
-Conclude that the clean selective guarantee fails in a primary cell when the
-95% question-cluster bootstrap interval for realized-risk inflation is
-strictly above zero after Holm correction. Conclude that it survives in a
-primary cell only when the upper interval endpoint is no greater than zero;
-otherwise report the cell as inconclusive. Always report coverage and accepted
-flip rate, regardless of direction.
+Report an empirical target-risk violation in a primary cell when the lower
+endpoint of the 95% question-cluster bootstrap interval for realized-risk
+inflation is above zero and the Holm-adjusted one-sided p-value is below 0.05.
+Report that risk is not above the target in the observed cell when the upper
+interval endpoint is no greater than zero; otherwise report the transfer as
+inconclusive. These labels describe the
+declared empirical calibration and clustered-inference rule, not a formal
+selective-risk guarantee. Always report coverage and flip retention, regardless
+of direction.
 
 If the transferred threshold accepts no test examples, realized risk and risk
 inflation are undefined: report zero coverage and do not classify the cell as

@@ -124,13 +124,19 @@ Paper outputs are deterministic for identical input bytes:
 - the manifest contains content hashes and no absolute paths or runtime
   timestamps.
 
+Paper-assets version `silent-bias-paper-assets-v4` separates the primary
+single-ordering RQ2 estimand from non-primary swap-average sensitivity rows,
+distinguishes infeasible clean rules from finite-rule zero test coverage, and
+uses empirical rather than formal-guarantee decision labels. The validator
+continues to accept immutable v3 packages for reproducibility.
+
 The threshold-transfer table and digest carry both the clustered
-risk-inflation interval and the accepted-flip-fraction interval. RQ1
+risk-inflation interval and the flip-retention interval. RQ1
 susceptibility follows its preregistered rule
 `auc_difference_ci_low > 0`; RQ2 and RQ3 decisions likewise use the exact
 decision-rule fields recorded by the analysis CSVs. A transferred threshold
 with no accepted test examples has undefined realized risk and is reported as
-unavailable rather than as a guarantee failure.
+unavailable rather than as an empirical target-risk violation or success.
 
 RQ2 keeps confidence and verdict semantics aligned. MSP is scored against the
 constrained deterministic verdict, consistency agreement against the

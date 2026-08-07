@@ -19,7 +19,10 @@ from biases.stats import mcnemar_exact
 
 ANALYSIS_VERSION = "silent-bias-p4-v6"
 HEADLINE_ROUTING_SPLIT = "test"
-ASSET_VERSION = "silent-bias-paper-assets-v3"
+ASSET_VERSION = "silent-bias-paper-assets-v4"
+SUPPORTED_ASSET_VERSIONS = frozenset(
+    {"silent-bias-paper-assets-v3", ASSET_VERSION}
+)
 MIXED_EFFECTS_FORMULA = (
     "flip ~ dose * family * congruence + (1 | question)"
 )
@@ -3845,7 +3848,7 @@ def _validate_assets(
         if manifest is None:
             continue
         manifests.append(manifest)
-        if manifest.get("asset_version") != ASSET_VERSION:
+        if manifest.get("asset_version") not in SUPPORTED_ASSET_VERSIONS:
             collector.add(
                 "asset_version_mismatch",
                 f"manifest declares {manifest.get('asset_version')!r}",
@@ -4207,6 +4210,7 @@ __all__ = [
     "ANALYSIS_VERSION",
     "ASSET_OUTPUT_NAMES",
     "ASSET_VERSION",
+    "SUPPORTED_ASSET_VERSIONS",
     "AnalysisValidationConfig",
     "AnalysisValidationReport",
     "AssetPackage",
