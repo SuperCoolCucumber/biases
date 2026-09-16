@@ -4,6 +4,187 @@ This file is the portable handoff for continuing the project in a local Codex
 app or on new infrastructure. It intentionally avoids machine-specific paths and
 cluster-specific operational notes.
 
+## Current handoff — 2026-09-16
+
+Read this section before the historical material below. The July entries
+document earlier execution states and decisions; their pending recovery and
+launch instructions are not a current work queue. Preserve those records, but
+revalidate any unfinished work against the latest artifacts before acting.
+
+### Current evidence and interpretation
+
+- The four-model strict-v3 study and its preregistered MSP analysis remain a
+  separate, immutable baseline. Its local package is
+  `artifacts/outputs/analysis/silent_bias_full_multimodel_strict_v3_82f1a8798404/`.
+  The August local audit in
+  `artifacts/audits/strict_v3_local_reproducibility_audit_20260807.md` verified
+  the analysis package but records missing raw inputs and external receipts.
+  Do not claim full raw-to-analysis reproducibility from that package alone.
+- The later Qwen2.5-32B-Instruct and Llama-3.3-70B-Instruct campaign completed
+  exploratory inference and RQ1–RQ3 analysis. Its narrative is
+  `reports/controlled_uncertainty_shift_exploratory_summary.md`. It reports
+  6,674 clean and 54,496 cued records per model. Those records represent
+  repeated judgments on the same source pairs. They are not independent
+  experiments or independent questions. The full August result claims were
+  not rerun during this handoff audit.
+- September 14 completed the local lowest-dose reanalysis described in
+  `docs/lowest_dose_analysis.md`, implemented in
+  `src/biases/analysis/lowest_dose.py` and
+  `scripts/analyze_lowest_dose.py`. Its validated inputs cover 1,703 held-out
+  source pairs across 40 test questions, both presentation orders, authority
+  dose 1, bandwagon dose 55, and both cue targets: 27,248 matched comparisons
+  across the two models. No selected clean/cued verdict disagrees with its
+  maximum-probability label.
+- The detailed current interpretation is
+  `artifacts/outputs/analysis/lowest_dose_20260914_interpretation/findings.md`;
+  the numerical report is
+  `artifacts/outputs/analysis/lowest_dose_20260914_v1/report.md`. A supported
+  descriptive finding is that judgments can reverse while maximum-label
+  confidence remains high. Among Llama bandwagon reversals toward the cue,
+  human-winner probability changes by about 94–95 percentage points, while
+  mean maximum confidence falls by 0.43 points for corrections and 1.11 points
+  for new disagreements with the human reference. These two groups have
+  different starting judgments; use the same-example human-congruence
+  contrasts for the matched comparison.
+- September 15 added flipper/non-flipper distribution overlays in
+  `artifacts/outputs/analysis/lowest_dose_flippers_nonflippers_overlay_20260915_v1/`.
+  This completed plotting package uses the September 14 paired table and
+  includes its replay script and manifest. No additional inference was run.
+
+The split is question-disjoint: 40 calibration questions and 40 different test
+questions, with every row for a question kept in one split. The September
+effect estimates use test questions only and share the same 2,000-resample
+question-cluster bootstrap schedule across conditions, answer orders, and
+models. This guards against treating repeated rows as independent, but it does
+not turn the exploratory analysis into a preregistered replication or make 40
+questions representative of all judge tasks. Models remain separate in effect
+estimates. Human ties and clean-model ties remain separate companion strata.
+
+Interpretation boundaries:
+
+- Maximum label probability uses the restricted A/B/tie distribution. It is
+  not calibrated probability of human agreement and is distinct from
+  verbalized confidence, repeatability, and entropy.
+- Corrections and disagreements refer to the human reference label, not
+  independently established truth.
+- Confidence summaries conditional on an observed reversal do not establish
+  a causal effect of confidence change on reversal. Endpoints reveal no
+  unobserved intermediate reasoning trajectory.
+- Intervals are exploratory, pointwise intervals without multiplicity
+  adjustment. Sparse or single-question groups may have degenerate intervals;
+  these do not establish zero risk or population certainty.
+- Authority endorsement by another user and a claimed 55% bandwagon majority
+  are the weakest tested doses within their respective families, not a common
+  quantitative influence scale.
+- Neither the August nor September narrative establishes a deployable
+  warning rule, calibrated risk guarantee, monotonic entropy response, or
+  general superiority of one model. The separately specified controlled-shift
+  analyzer in `docs/controlled_uncertainty_shift_design.md` has a broader
+  output contract; do not infer its completion from these reports.
+
+### Files required for local September replay
+
+The following paths are relative to the current artifact root. Set
+`BIASES_ARTIFACT_ROOT` to the transferred artifact directory; the default is
+the repository's ignored `artifacts/` directory.
+
+- Source dataset: `data/processed/mtbench_full.csv`.
+- Input contract: `outputs/analysis/lowest_dose_20260912_request/input_contract.json`.
+  Keep this earlier request directory: the completed analysis depends on its
+  frozen contract.
+- Scores: `inputs/lowest_dose_scores_20260914/qwen_stage_a.jsonl`,
+  `qwen_stage_b.jsonl`, `llama_stage_a.jsonl`, and `llama_stage_b.jsonl`.
+- Completed package: `outputs/analysis/lowest_dose_20260914_v1/`, including
+  `analysis_complete.json`, `input_audit.json`, per-comparison tables,
+  summaries, report, and PNG/PDF figures.
+- Interpretation and figures: `outputs/analysis/lowest_dose_20260914_interpretation/`,
+  `lowest_dose_distributions_20260914_v1/`,
+  `lowest_dose_label_probabilities_20260914_v1/`, and the model/family
+  `*_followed_cue_*_20260914_v1/` directories.
+- Follow-up overlays: `outputs/analysis/lowest_dose_flippers_nonflippers_overlay_20260915_v1/`,
+  including `plot_overlays.py`, the manifest, tables, and PNG/PDF figures.
+- Presentations and report PDFs are under the separate ignored repository
+  directory `output/`. Preserve these alongside the artifact root.
+
+The September source CSV, four score files, input contract, implementation
+files, analysis specification, and all 15 declared result files matched their
+recorded hashes during the September 15 handoff audit. This establishes local
+score-to-analysis replay inputs for the lowest-dose package; it does not
+establish completeness of historical raw stochastic run records or remote
+archives. The September 12 inventory predates score retrieval, so its claim
+that these scores are absent locally is superseded.
+
+For a fresh replay under Python 3.12, install the declared development and
+analysis dependencies, then select a new output directory:
+
+```bash
+source scripts/artifact_env.sh
+uv sync --frozen --extra dev --extra analysis
+uv run python scripts/analyze_lowest_dose.py \
+  --stage-a "$BIASES_ARTIFACT_ROOT/inputs/lowest_dose_scores_20260914/qwen_stage_a.jsonl" \
+            "$BIASES_ARTIFACT_ROOT/inputs/lowest_dose_scores_20260914/llama_stage_a.jsonl" \
+  --stage-b "$BIASES_ARTIFACT_ROOT/inputs/lowest_dose_scores_20260914/qwen_stage_b.jsonl" \
+            "$BIASES_ARTIFACT_ROOT/inputs/lowest_dose_scores_20260914/llama_stage_b.jsonl" \
+  --source-csv "$BIASES_ARTIFACT_ROOT/data/processed/mtbench_full.csv" \
+  --input-contract "$BIASES_ARTIFACT_ROOT/outputs/analysis/lowest_dose_20260912_request/input_contract.json" \
+  --output-dir "$BIASES_ARTIFACT_ROOT/outputs/analysis/lowest_dose_replay" \
+  --bootstrap-resamples 2000 --seed 20260912
+```
+
+The command refuses to overwrite an existing result directory. Existing
+provenance receipts may contain original execution paths; preserve those
+receipts and use the transferable relative paths above for a new run.
+
+### Handoff verification and next action
+
+The September 15 audit used Python 3.12.14. The 72 targeted lowest-dose module
+and CLI tests passed. The wider available suite passed 627 tests and skipped
+two tests requiring `statsmodels`. Full collection was blocked by the missing
+`datasets` dependency in the audit environment; only
+`tests/test_prepare_mtbench_stratified.py` was excluded from the wider run.
+Both Slurm templates and `scripts/artifact_env.sh` passed shell syntax checks;
+the working-tree diff passed whitespace checks. No code failure was found in
+the exercised tests. Complete the dependency install before requiring a full
+suite pass on a new machine.
+
+On September 16, the frozen development and analysis dependencies installed
+successfully under Python 3.12.12, and the full suite passed all 630 tests with
+no skips. The run emitted 96 NumPy matrix-multiplication runtime warnings.
+Separate bounded-matrix checks reproduced the warnings with the Accelerate
+backend while producing finite results matching non-BLAS calculations; no
+warning suppression or analysis-code change was applied. Python compilation
+and whitespace checks also passed.
+
+Continue with the September findings and matched human-congruence analyses.
+Verify the transferred package and external-archive inventory before scheduling
+new inference. The September 16 repository update versions the latest analysis
+code, tests, specification, and exploratory summary, which were untracked at
+the September 15 handoff inspection. Generated artifacts remain ignored and
+must be transferred separately; a Git clone alone does not include them.
+
+The September 16 pre-commit review rechecked 24 SHA-256 values: both analysis
+implementation files, the specification, source CSV, frozen input contract,
+four score inputs, and all 15 declared result files. All matched the recorded
+receipts. This checks preservation of the September package; it does not
+revalidate the full August RQ1–RQ3 numerical claims or recover missing raw
+stochastic records.
+
+### Superseded reports and inventories
+
+`reports/paper_results.md` is the retained digest from the invalidated early
+single-model Qwen3-4B pilot. Keep its historical bytes for provenance; do not
+use its behavioral claims. In contrast, `reports/preliminary_silent_bias_pilot.md`
+now documents the corrected four-model pilot. The September 12 two-large-model
+inventory predates the recovered score files and is not the current availability
+list. Generated documents and receipts with original absolute paths are kept
+unchanged; the transfer package provides portable navigation copies.
+
+### Historical project background and execution log
+
+The sections below are retained for historical context. Where a status or next
+step conflicts with the dated current handoff above, use the current handoff
+and verify the relevant artifact evidence before acting.
+
 ## Project Goal
 
 The project studies whether uncertainty signals can detect biased LLM-judge

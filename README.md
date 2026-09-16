@@ -5,6 +5,15 @@ bias manipulations such as position, authority, and bandwagon effects.
 
 ## Current status
 
+The latest work is the September 14 lowest-dose reanalysis of
+Qwen2.5-32B-Instruct and Llama-3.3-70B-Instruct, with September 15 follow-up
+plots. Start with the [current handoff](docs/codex_handoff.md) for the findings,
+evidence limits, artifact inventory, and replay command. The
+[analysis specification](docs/lowest_dose_analysis.md) defines the September
+analysis; the [August exploratory summary](reports/controlled_uncertainty_shift_exploratory_summary.md)
+preserves the earlier campaign's reported RQ1–RQ3 results and their verification
+limits. Score files and generated outputs must be transferred separately.
+
 The repository currently provides an end-to-end experiment and analysis
 pipeline:
 

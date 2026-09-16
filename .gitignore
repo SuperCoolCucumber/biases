@@ -28,6 +28,10 @@ logs/
 outputs/
 outputs
 output/
+# Local presentation build sources and previews are included in handoff archives.
+.codex_tmp/
+.codex_build_exploratory_analysis_v1.py
+tmp/
 checkpoints/
 models/
 wandb/
